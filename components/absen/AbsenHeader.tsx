@@ -47,31 +47,33 @@ export function AbsenHeader() {
 
   return (
     <>
-      <header className="bg-surface/95 backdrop-blur border-b border-border-sky px-5 lg:px-8 py-3 flex items-center justify-between gap-4 shadow-sm">
+      <header className="bg-surface/95 backdrop-blur border-b border-border-sky px-4 sm:px-6 lg:px-8 py-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
         <Link href="/absen" className="flex items-center gap-3 shrink-0">
           <Image
             src="/images/logo.jpeg"
             alt="MonsClock"
             width={160}
             height={52}
-            className="h-12 w-auto object-contain"
+            className="h-10 sm:h-12 w-auto object-contain"
             priority
           />
         </Link>
 
-        <div className="flex items-center gap-4 lg:gap-6">
+        <div className="flex flex-wrap items-center gap-3 lg:gap-5">
           <ClockWib />
 
           <Link
             href="/absen/daftar-wajah"
-            className="flex items-center gap-2.5 rounded-2xl bg-primary-50 hover:bg-primary-100 border-2 border-primary-200 px-4 py-2.5 shadow-soft transition active:scale-95 min-h-[56px]"
+            className="flex items-center gap-2.5 rounded-2xl bg-primary-50 hover:bg-primary-100 border-2 border-primary-200 px-3.5 py-2 shadow-soft transition active:scale-95 min-h-[50px]"
           >
-            <div className="w-9 h-9 rounded-xl bg-primary-600 text-white flex items-center justify-center shrink-0">
-              <ScanFace className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-xl bg-primary-600 text-white flex items-center justify-center shrink-0">
+              <ScanFace className="w-4 h-4" />
             </div>
             <div className="text-left leading-tight">
-              <div className="text-sm font-bold text-ink">Daftar Wajah</div>
-              <div className="text-[11px] font-medium text-ink-muted">Registrasi baru</div>
+              <div className="text-xs sm:text-sm font-bold text-ink">Daftar Wajah</div>
+              <div className="text-[11px] font-medium text-ink-muted hidden sm:block">
+                Registrasi baru
+              </div>
             </div>
           </Link>
 

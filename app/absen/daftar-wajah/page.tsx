@@ -224,7 +224,7 @@ export default function TabletDaftarWajahPage() {
               <ScanFace className="w-6 h-6" />
               <span>
                 {selectedSubject && selectedSubject.sample_count > 0
-                  ? 'Tambah Sampel Wajah (5 Foto)'
+                  ? 'Tambah Sampel Wajah (3 Sampel)'
                   : 'Mulai Pendaftaran Wajah'}
               </span>
             </button>

@@ -62,8 +62,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Cek kemiripan terhadap orang lain yang sudah terdaftar
-  const threshold = Number(process.env.NEXT_PUBLIC_FACE_THRESHOLD || '0.5') || 0.5;
+  // Cek kemiripan ketat (0.46) terhadap orang lain yang sudah terdaftar agar tidak tertukar
+  const envThreshold = Number(process.env.NEXT_PUBLIC_FACE_THRESHOLD || '0.42') || 0.42;
+  const duplicateGuardThreshold = Math.max(0.46, envThreshold * 0.92);
   const col = subject_type === 'employee' ? 'employee_id' : 'escort_id';
 
   const { data: otherTemplates } = await adminClient
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
     for (const sample of samples) {
       for (const existing of otherTemplates) {
         const dist = euclideanDist(sample.descriptor, existing.descriptor as number[]);
-        if (dist < threshold * 0.92) {
+        if (dist < duplicateGuardThreshold) {
           const otherId = existing[col];
           let otherName = 'orang lain';
           if (otherId) {

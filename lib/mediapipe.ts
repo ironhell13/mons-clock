@@ -40,23 +40,25 @@ export async function getFaceLandmarker(): Promise<FaceLandmarker> {
   return landmarkerPromise;
 }
 
+export interface NormalizedFaceBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  widthRatio: number;
+  heightRatio: number;
+  centerX: number;
+  centerY: number;
+}
+
 export interface FaceQualityAnalysis {
   faceCount: number;
   statusOk: boolean;
   message: string;
   yaw: number; // positif = menoleh ke kiri layar (cermin), negatif = ke kanan
-  pitch: number; // negatif = menengadah, positif = menunduk
+  pitch: number; // relatif terhadap baseline wajah
   isBlinking: boolean;
-  box: {
-    minX: number;
-    minY: number;
-    maxX: number;
-    maxY: number;
-    widthRatio: number;
-    heightRatio: number;
-    centerX: number;
-    centerY: number;
-  } | null;
+  box: NormalizedFaceBox | null;
 }
 
 export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualityAnalysis {
@@ -104,7 +106,6 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
 
-  // Hitung estimasi yaw & pitch dari landmark hidung (1), pipi (234, 454), dahi (10), dagu (152)
   const nose = landmarks[1];
   const leftCheek = landmarks[234];
   const rightCheek = landmarks[454];
@@ -122,11 +123,20 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
   const blendshapes = result.faceBlendshapes?.[0]?.categories ?? [];
   const blinkLeft = blendshapes.find((c) => c.categoryName === 'eyeBlinkLeft')?.score ?? 0;
   const blinkRight = blendshapes.find((c) => c.categoryName === 'eyeBlinkRight')?.score ?? 0;
-  const isBlinking = blinkLeft > 0.36 || blinkRight > 0.36;
+  const isBlinking = blinkLeft > 0.34 || blinkRight > 0.34;
 
-  const box = { minX, minY, maxX, maxY, widthRatio, heightRatio, centerX, centerY };
+  const box: NormalizedFaceBox = {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    widthRatio,
+    heightRatio,
+    centerX,
+    centerY,
+  };
 
-  if (widthRatio < 0.16 || heightRatio < 0.20) {
+  if (widthRatio < 0.16 || heightRatio < 0.18) {
     return {
       faceCount: 1,
       statusOk: false,
@@ -138,7 +148,7 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
     };
   }
 
-  if (widthRatio > 0.78 || heightRatio > 0.88) {
+  if (widthRatio > 0.85 || heightRatio > 0.90) {
     return {
       faceCount: 1,
       statusOk: false,
@@ -150,7 +160,7 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
     };
   }
 
-  if (centerX < 0.26 || centerX > 0.74 || centerY < 0.22 || centerY > 0.78) {
+  if (centerX < 0.22 || centerX > 0.78 || centerY < 0.18 || centerY > 0.82) {
     return {
       faceCount: 1,
       statusOk: false,
@@ -181,8 +191,8 @@ export function checkVideoFrameQuality(video: HTMLVideoElement): {
     return { ok: false, reason: 'Kamera belum siap' };
   }
 
-  const w = 160;
-  const h = 120;
+  const w = 120;
+  const h = 160;
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
@@ -215,12 +225,11 @@ export function checkVideoFrameQuality(video: HTMLVideoElement): {
   const avgBrightness = sumLum / (w * h);
   const avgEdge = edgeEnergy / ((w - 2) * (h - 2));
 
-  if (avgBrightness < 36) {
+  if (avgBrightness < 34) {
     return { ok: false, reason: 'Pencahayaan terlalu gelap, tambah cahaya' };
   }
-  if (avgEdge < 5.5) {
+  if (avgEdge < 5.0) {
     return { ok: false, reason: 'Gambar buram, tahan posisi stabil' };
   }
   return { ok: true };
 }
-

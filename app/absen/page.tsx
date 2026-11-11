@@ -54,15 +54,15 @@ const CARDS = [
 
 export default function AbsenHomePage() {
   return (
-    <div className="flex-1 flex flex-col justify-center px-6 lg:px-10 py-4 max-w-7xl w-full mx-auto overflow-hidden">
-      <div className="grid grid-cols-3 grid-rows-2 gap-4 lg:gap-6 flex-1 max-h-[560px]">
+    <div className="flex-1 flex flex-col justify-center px-4 sm:px-6 lg:px-10 py-4 max-w-7xl w-full mx-auto">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6 flex-1 lg:max-h-[560px]">
         {CARDS.map((card) => {
           const Icon = card.icon;
           return (
             <Link
               key={card.title}
               href={card.href}
-              className={`group relative rounded-2xl bg-surface border-2 border-border-sky ${card.borderHover} shadow-card p-5 lg:p-7 flex flex-col items-center justify-center text-center transition duration-200 hover:-translate-y-1 active:scale-[0.98] min-h-[160px]`}
+              className={`group relative rounded-2xl bg-surface border-2 border-border-sky ${card.borderHover} shadow-card p-5 lg:p-7 flex flex-col items-center justify-center text-center transition duration-200 hover:-translate-y-1 active:scale-[0.98] min-h-[150px]`}
             >
               <div
                 className={`w-16 h-16 lg:w-20 lg:h-20 rounded-2xl bg-gradient-to-br ${card.gradient} text-white flex items-center justify-center shadow-soft mb-3.5 group-hover:scale-105 transition`}

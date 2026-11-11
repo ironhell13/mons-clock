@@ -15,7 +15,6 @@ import {
   ensureFaceModelsLoaded,
   extractFaceDescriptor,
   getCachedFaceTemplates,
-  getFaceThreshold,
   invalidateFaceTemplatesCache,
   matchDescriptor,
 } from '@/lib/face';
@@ -23,45 +22,35 @@ import {
   analyzeMediaPipeResult,
   checkVideoFrameQuality,
   getFaceLandmarker,
+  type NormalizedFaceBox,
 } from '@/lib/mediapipe';
 
 interface EnrollmentStep {
   key: string;
   label: string;
   instruction: string;
-  checkPose: (yaw: number, pitch: number) => boolean;
+  checkPose: (yaw: number) => boolean;
 }
 
+// 3 langkah cepat & natural (tanpa dangak ke atas / tunduk ekstrem) agar akurasi descriptor optimal
 const ENROLLMENT_STEPS: EnrollmentStep[] = [
   {
     key: 'lurus',
     label: 'Lurus',
     instruction: 'Hadap lurus ke kamera',
-    checkPose: (yaw, pitch) => Math.abs(yaw) <= 0.11 && Math.abs(pitch) <= 0.12,
+    checkPose: (yaw) => Math.abs(yaw) <= 0.09,
   },
   {
     key: 'kiri',
-    label: 'Kiri',
+    label: 'Sedikit Kiri',
     instruction: 'Tolehkan wajah sedikit ke kiri',
-    checkPose: (yaw) => Math.abs(yaw) >= 0.08 && yaw > 0,
+    checkPose: (yaw) => yaw >= 0.045,
   },
   {
     key: 'kanan',
-    label: 'Kanan',
+    label: 'Sedikit Kanan',
     instruction: 'Tolehkan wajah sedikit ke kanan',
-    checkPose: (yaw) => Math.abs(yaw) >= 0.08 && yaw < 0,
-  },
-  {
-    key: 'atas',
-    label: 'Atas',
-    instruction: 'Angkat dagu sedikit ke atas',
-    checkPose: (_yaw, pitch) => pitch <= -0.04,
-  },
-  {
-    key: 'bawah',
-    label: 'Bawah',
-    instruction: 'Tundukkan dagu sedikit ke bawah',
-    checkPose: (_yaw, pitch) => pitch >= 0.05,
+    checkPose: (yaw) => yaw <= -0.045,
   },
 ];
 
@@ -87,15 +76,16 @@ export function FaceEnrollView({
   const rafRef = useRef<number | null>(null);
   const lastCheckRef = useRef<number>(0);
   const capturingRef = useRef<boolean>(false);
-  const stepHoldRef = useRef<number>(0);
   const stepIndexRef = useRef<number>(0);
   const samplesRef = useRef<{ descriptor: number[]; sample_label: string }[]>([]);
   const lastCaptureAtRef = useRef<number>(0);
+  const lastBoxRef = useRef<NormalizedFaceBox | null>(null);
 
-  const [initializing, setInitializing] = useState(true);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [modelsReady, setModelsReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [stepIndex, setStepIndex] = useState(0);
-  const [statusMessage, setStatusMessage] = useState('Menyiapkan kamera...');
+  const [statusMessage, setStatusMessage] = useState('Menyalakan kamera...');
   const [saving, setSaving] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
   const [retryCounter, setRetryCounter] = useState(0);
@@ -159,20 +149,20 @@ export function FaceEnrollView({
 
     capturingRef.current = true;
     try {
-      const descriptor = await extractFaceDescriptor(video);
+      const descriptor = await extractFaceDescriptor(video, lastBoxRef.current);
       if (!descriptor) {
         setStatusMessage('Wajah gagal diekstrak, posisikan lebih jelas.');
         capturingRef.current = false;
         return;
       }
 
-      // Cek agar wajah tidak terlalu mirip dengan orang lain yang sudah terdaftar
+      // Cek ketat (0.46) agar tidak bertabrakan dengan orang lain yang sudah terdaftar
       const allTemplates = await getCachedFaceTemplates(subjectType);
       const otherTemplates = allTemplates.filter((t) => t.subject_id !== subjectId);
-      const conflict = matchDescriptor(descriptor, otherTemplates, getFaceThreshold() * 0.92);
+      const conflict = matchDescriptor(descriptor, otherTemplates, 0.46);
       if (conflict.matched) {
         setDuplicateWarning(
-          `Wajah terdeteksi mirip dengan "${conflict.name}" yang sudah terdaftar. Pastikan Anda memilih nama yang tepat.`
+          `Wajah terdeteksi mirip dengan "${conflict.name}" yang sudah terdaftar. Pastikan nama yang dipilih benar atau pencahayaan merata.`
         );
         capturingRef.current = false;
         return;
@@ -185,7 +175,6 @@ export function FaceEnrollView({
       ];
       samplesRef.current = nextSamples;
       lastCaptureAtRef.current = Date.now();
-      stepHoldRef.current = 0;
 
       if (nextSamples.length >= ENROLLMENT_STEPS.length) {
         setStepIndex(ENROLLMENT_STEPS.length);
@@ -205,7 +194,8 @@ export function FaceEnrollView({
     let cancelled = false;
 
     async function setup() {
-      setInitializing(true);
+      setCameraReady(false);
+      setModelsReady(false);
       setCameraError(null);
       setDuplicateWarning(null);
       samplesRef.current = [];
@@ -213,16 +203,18 @@ export function FaceEnrollView({
       setStepIndex(0);
 
       try {
-        const [stream] = await Promise.all([
-          navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-            audio: false,
-          }),
+        const streamPromise = navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 960 } },
+          audio: false,
+        });
+
+        const modelsPromise = Promise.all([
           getFaceLandmarker(),
           ensureFaceModelsLoaded(),
           getCachedFaceTemplates(subjectType),
         ]);
 
+        const stream = await streamPromise;
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
           return;
@@ -233,12 +225,19 @@ export function FaceEnrollView({
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
+        setCameraReady(true);
+        setStatusMessage('Menyiapkan deteksi wajah...');
+
+        await modelsPromise;
+        if (cancelled) return;
+
+        setModelsReady(true);
         setStatusMessage(ENROLLMENT_STEPS[0].instruction);
-        setInitializing(false);
       } catch {
         if (cancelled) return;
         stopCamera();
-        setInitializing(false);
+        setCameraReady(false);
+        setModelsReady(false);
         setCameraError('Tidak dapat mengakses kamera atau memuat model wajah.');
       }
     }
@@ -252,15 +251,15 @@ export function FaceEnrollView({
   }, [retryCounter, stopCamera, subjectType]);
 
   useEffect(() => {
-    if (initializing || cameraError || saving || duplicateWarning) return;
+    if (!cameraReady || !modelsReady || cameraError || saving || duplicateWarning) return;
     let active = true;
 
     const tick = async (ts: number) => {
       if (!active) return;
       rafRef.current = requestAnimationFrame(tick);
       if (document.hidden || capturingRef.current) return;
-      if (Date.now() - lastCaptureAtRef.current < 900) return;
-      if (ts - lastCheckRef.current < 130) return;
+      if (Date.now() - lastCaptureAtRef.current < 380) return;
+      if (ts - lastCheckRef.current < 100) return;
 
       lastCheckRef.current = ts;
       const video = videoRef.current;
@@ -274,25 +273,19 @@ export function FaceEnrollView({
         const landmarker = await getFaceLandmarker();
         const mpRes = landmarker.detectForVideo(video, performance.now());
         const analysis = analyzeMediaPipeResult(mpRes);
+        lastBoxRef.current = analysis.box;
 
         if (!analysis.statusOk) {
-          stepHoldRef.current = 0;
           setStatusMessage(analysis.message);
           return;
         }
 
-        if (!step.checkPose(analysis.yaw, analysis.pitch)) {
-          stepHoldRef.current = 0;
+        if (!step.checkPose(analysis.yaw)) {
           setStatusMessage(step.instruction);
           return;
         }
 
-        stepHoldRef.current += 1;
-        if (stepHoldRef.current >= 2) {
-          await captureCurrentStep();
-        } else {
-          setStatusMessage('Tahan posisi...');
-        }
+        await captureCurrentStep();
       } catch {
         // lanjut frame berikut
       }
@@ -303,21 +296,20 @@ export function FaceEnrollView({
       active = false;
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [cameraError, captureCurrentStep, duplicateWarning, initializing, saving]);
+  }, [cameraError, cameraReady, captureCurrentStep, duplicateWarning, modelsReady, saving]);
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl bg-primary-50 border border-border-sky px-4 py-3 flex items-start gap-3">
+      <div className="rounded-xl bg-primary-50 border border-border-sky px-4 py-2.5 flex items-start gap-2.5">
         <ShieldCheck className="w-5 h-5 text-primary-700 shrink-0 mt-0.5" />
         <div className="text-xs text-ink-muted leading-relaxed">
-          Pendaftaran wajah untuk <strong className="text-ink">{subjectName}</strong>. Sistem hanya
-          menyimpan descriptor numerik (bukan foto wajah) khusus untuk keperluan absensi pos
-          security.
+          Pendaftaran wajah untuk <strong className="text-ink">{subjectName}</strong> (3 sampel cepat).
+          Hanya descriptor numerik yang disimpan, bukan foto wajah.
         </div>
       </div>
 
-      {/* Stepper 1/5 .. 5/5 */}
-      <div className="grid grid-cols-5 gap-2">
+      {/* Stepper 1/3 .. 3/3 */}
+      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
         {ENROLLMENT_STEPS.map((step, idx) => {
           const done = idx < stepIndex;
           const active = idx === stepIndex;
@@ -332,8 +324,8 @@ export function FaceEnrollView({
                     : 'bg-page border-border-sky text-ink-muted'
               }`}
             >
-              <div className="text-[11px] font-bold">
-                {done ? '✓' : `${idx + 1}/5`} {step.label}
+              <div className="text-xs font-bold">
+                {done ? '✓' : `${idx + 1}/3`} {step.label}
               </div>
             </div>
           );
@@ -356,7 +348,8 @@ export function FaceEnrollView({
         </div>
       )}
 
-      <div className="relative bg-slate-950 rounded-2xl overflow-hidden aspect-video max-h-[380px] w-full flex items-center justify-center">
+      {/* Kamera Portrait 3:4 */}
+      <div className="relative bg-slate-950 rounded-2xl overflow-hidden aspect-[3/4] max-w-[360px] max-h-[56vh] w-full mx-auto flex items-center justify-center">
         <video
           ref={videoRef}
           playsInline
@@ -367,11 +360,11 @@ export function FaceEnrollView({
 
         {!cameraError && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div className="w-48 h-60 rounded-[999px] border-4 border-primary/90 shadow-[0_0_0_9999px_rgba(15,23,42,0.45)]" />
+            <div className="w-[64%] h-[62%] rounded-[999px] border-4 border-primary/90 shadow-[0_0_0_9999px_rgba(15,23,42,0.45)]" />
           </div>
         )}
 
-        {(initializing || saving) && !cameraError && (
+        {(!cameraReady || saving) && !cameraError && (
           <div className="absolute inset-0 bg-slate-950/75 flex flex-col items-center justify-center text-white gap-2.5">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
             <span className="text-sm font-bold">{statusMessage}</span>
@@ -393,16 +386,21 @@ export function FaceEnrollView({
           </div>
         )}
 
-        {!initializing && !saving && !cameraError && (
-          <div className="absolute bottom-4 inset-x-4 flex justify-center">
-            <div className="rounded-xl bg-slate-900/80 border border-white/20 px-4 py-2 text-sm font-bold text-white backdrop-blur">
-              Sampel {Math.min(stepIndex + 1, 5)}/5: {statusMessage}
+        {cameraReady && !saving && !cameraError && (
+          <div className="absolute bottom-3 inset-x-3 flex justify-center">
+            <div className="inline-flex items-center gap-2 rounded-xl bg-slate-900/85 border border-white/20 px-3.5 py-2 text-xs sm:text-sm font-bold text-white backdrop-blur">
+              {!modelsReady && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
+              <span>
+                {modelsReady
+                  ? `Sampel ${Math.min(stepIndex + 1, 3)}/3: ${statusMessage}`
+                  : statusMessage}
+              </span>
             </div>
           </div>
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3 max-w-md mx-auto">
         <button
           type="button"
           onClick={() => {
@@ -415,18 +413,17 @@ export function FaceEnrollView({
           Batal
         </button>
 
-        {!initializing && !saving && !cameraError && stepIndex < ENROLLMENT_STEPS.length && (
+        {cameraReady && modelsReady && !saving && !cameraError && stepIndex < ENROLLMENT_STEPS.length && (
           <button
             type="button"
             onClick={captureCurrentStep}
             className="inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-4 py-2.5 text-sm font-semibold transition"
           >
             <CheckCircle2 className="w-4 h-4" />
-            <span>Ambil Sampel Manual ({stepIndex + 1}/5)</span>
+            <span>Ambil Manual ({stepIndex + 1}/3)</span>
           </button>
         )}
       </div>
     </div>
   );
 }
-

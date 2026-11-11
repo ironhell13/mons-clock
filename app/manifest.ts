@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
     description: 'Sistem absensi pengenalan wajah dan mutasi operasional pos security.',
     start_url: '/absen',
     display: 'standalone',
-    orientation: 'landscape',
+    orientation: 'any',
     background_color: '#F0F9FF',
     theme_color: '#0EA5E9',
     icons: [
@@ -19,3 +19,4 @@ export default function manifest(): MetadataRoute.Manifest {
     ],
   };
 }
+

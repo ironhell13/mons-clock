@@ -37,12 +37,6 @@ export interface FaceScannerProps {
   showEnrollHintLink?: boolean;
 }
 
-type LivenessChallenge = 'blink' | 'head_turn';
-
-function pickChallenge(): LivenessChallenge {
-  return Math.random() < 0.5 ? 'blink' : 'head_turn';
-}
-
 export function FaceScanner({
   purpose,
   title,
@@ -61,20 +55,15 @@ export function FaceScanner({
   const processingRef = useRef<boolean>(false);
   const cooldownUntilRef = useRef<number>(0);
   const livenessPassedRef = useRef<boolean>(false);
-  const steadyCountRef = useRef<number>(0);
-  const challengeRef = useRef<LivenessChallenge>(pickChallenge());
   const prevNosePosRef = useRef<{ x: number; y: number } | null>(null);
   const motionAccumRef = useRef<number>(0);
+  const pendingConfirmRef = useRef<{ subjectId: string; count: number } | null>(null);
 
-  const [initializing, setInitializing] = useState(true);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [modelsReady, setModelsReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState('Menyiapkan kamera dan model wajah...');
+  const [statusMessage, setStatusMessage] = useState('Menyalakan kamera...');
   const [statusTone, setStatusTone] = useState<'neutral' | 'ready' | 'success' | 'warn' | 'error'>('neutral');
-  const [livenessHint, setLivenessHint] = useState<string>(
-    challengeRef.current === 'blink'
-      ? 'Berkedip satu kali secara natural'
-      : 'Gerakkan kepala sedikit ke kiri/kanan'
-  );
   const [failCount, setFailCount] = useState(0);
   const [retryCounter, setRetryCounter] = useState(0);
 
@@ -93,61 +82,65 @@ export function FaceScanner({
   }, []);
 
   const resetChallenge = useCallback(() => {
-    const next = pickChallenge();
-    challengeRef.current = next;
     livenessPassedRef.current = false;
-    steadyCountRef.current = 0;
     motionAccumRef.current = 0;
     prevNosePosRef.current = null;
-    setLivenessHint(
-      next === 'blink'
-        ? 'Berkedip satu kali secara natural'
-        : 'Gerakkan kepala sedikit ke kiri/kanan'
-    );
+    pendingConfirmRef.current = null;
   }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     async function setup() {
-      setInitializing(true);
+      setCameraReady(false);
+      setModelsReady(false);
       setCameraError(null);
       setStatusTone('neutral');
-      setStatusMessage('Memuat model pengenalan wajah...');
+      setStatusMessage('Menyalakan kamera...');
 
       try {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           throw new Error('UNSUPPORTED_CAMERA');
         }
 
-        const [stream, templates] = await Promise.all([
-          navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: 'user',
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            },
-            audio: false,
-          }),
+        // Buka kamera segera dengan resolusi portrait ringan
+        const streamPromise = navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 720 },
+            height: { ideal: 960 },
+          },
+          audio: false,
+        });
+
+        // Paralelkan preload model dan template wajah
+        const modelsPromise = Promise.all([
           getCachedFaceTemplates(purpose),
           getFaceLandmarker(),
           ensureFaceModelsLoaded(),
         ]);
 
+        const stream = await streamPromise;
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
 
         streamRef.current = stream;
-        templatesRef.current = templates;
-        lastCacheRefreshRef.current = Date.now();
-
         const videoEl = videoRef.current;
         if (videoEl) {
           videoEl.srcObject = stream;
           await videoEl.play();
         }
+        setCameraReady(true);
+        setStatusMessage('Menyiapkan pengenalan wajah...');
+
+        const [templates] = await modelsPromise;
+        if (cancelled) return;
+
+        templatesRef.current = templates;
+        lastCacheRefreshRef.current = Date.now();
+        setModelsReady(true);
 
         if (templates.length === 0) {
           setStatusTone('warn');
@@ -158,13 +151,13 @@ export function FaceScanner({
           );
         } else {
           setStatusTone('neutral');
-          setStatusMessage('Posisikan wajah di dalam bingkai');
+          setStatusMessage('Posisikan wajah di dalam bingkai oval');
         }
-        setInitializing(false);
       } catch (err) {
         if (cancelled) return;
         stopCamera();
-        setInitializing(false);
+        setCameraReady(false);
+        setModelsReady(false);
 
         const errorName = err instanceof DOMException ? err.name : '';
         const errMsg = err instanceof Error ? err.message : '';
@@ -194,9 +187,9 @@ export function FaceScanner({
     };
   }, [purpose, retryCounter, stopCamera]);
 
-  // Loop deteksi MediaPipe ~8-10 fps, berhenti otomatis saat tab tidak aktif
+  // Loop deteksi ~11 fps, berhenti otomatis saat tab tidak aktif
   useEffect(() => {
-    if (initializing || cameraError || paused) return;
+    if (!cameraReady || !modelsReady || cameraError || paused) return;
 
     let active = true;
 
@@ -207,7 +200,7 @@ export function FaceScanner({
       if (document.hidden) return;
       if (processingRef.current) return;
       if (Date.now() < cooldownUntilRef.current) return;
-      if (timestamp - lastDetectMsRef.current < 115) return;
+      if (timestamp - lastDetectMsRef.current < 90) return;
 
       lastDetectMsRef.current = timestamp;
       const video = videoRef.current;
@@ -239,51 +232,45 @@ export function FaceScanner({
         const analysis = analyzeMediaPipeResult(mpRes);
 
         if (!analysis.statusOk || !analysis.box) {
-          steadyCountRef.current = 0;
+          pendingConfirmRef.current = null;
           setStatusTone('neutral');
           setStatusMessage(analysis.message);
           return;
         }
 
-        // Hitung gerakan alami (anti foto statis)
+        // Liveness alami: berkedip atau gerakan kepala alami ringan (tolak foto statis)
         const nose = mpRes.faceLandmarks[0]?.[1];
         if (nose && prevNosePosRef.current) {
           const dist = Math.hypot(
             nose.x - prevNosePosRef.current.x,
             nose.y - prevNosePosRef.current.y
           );
-          motionAccumRef.current += dist;
+          if (dist > 0.0015) {
+            motionAccumRef.current += dist;
+          }
         }
         if (nose) {
           prevNosePosRef.current = { x: nose.x, y: nose.y };
         }
 
-        // Cek tantangan liveness ringan
         if (!livenessPassedRef.current) {
-          const challenge = challengeRef.current;
-          if (challenge === 'blink' && analysis.isBlinking) {
-            livenessPassedRef.current = true;
-          } else if (challenge === 'head_turn' && Math.abs(analysis.yaw) > 0.085) {
+          if (
+            analysis.isBlinking ||
+            motionAccumRef.current >= 0.012 ||
+            Math.abs(analysis.yaw) >= 0.055
+          ) {
             livenessPassedRef.current = true;
           } else {
             setStatusTone('ready');
-            setStatusMessage(livenessHint);
+            setStatusMessage('Berkedip atau gerakkan wajah sedikit');
             return;
           }
         }
 
-        // Setelah liveness terpenuhi, tunggu posisi lurus & stabil
-        if (Math.abs(analysis.yaw) > 0.17 || Math.abs(analysis.pitch) > 0.18) {
-          steadyCountRef.current = 0;
+        // Pastikan wajah cukup menghadap depan saat ekstrak descriptor agar akurat
+        if (Math.abs(analysis.yaw) > 0.14) {
           setStatusTone('ready');
           setStatusMessage('Hadapkan wajah lurus ke kamera');
-          return;
-        }
-
-        steadyCountRef.current += 1;
-        if (steadyCountRef.current < 2) {
-          setStatusTone('ready');
-          setStatusMessage('Tahan sebentar...');
           return;
         }
 
@@ -294,15 +281,13 @@ export function FaceScanner({
           return;
         }
 
-        // Jalankan face-api descriptor + pencocokan
         processingRef.current = true;
         setStatusTone('ready');
-        setStatusMessage('Memverifikasi identitas wajah...');
+        setStatusMessage('Memverifikasi wajah...');
 
-        const descriptor = await extractFaceDescriptor(video);
+        const descriptor = await extractFaceDescriptor(video, analysis.box);
         if (!descriptor) {
           processingRef.current = false;
-          steadyCountRef.current = 0;
           setStatusTone('warn');
           setStatusMessage('Wajah kurang jelas, tahan sebentar...');
           return;
@@ -311,6 +296,18 @@ export function FaceScanner({
         const outcome = matchDescriptor(descriptor, templatesRef.current);
 
         if (outcome.matched) {
+          // Jika jarak > 0.33, wajib konfirmasi 2 frame berturut-turut untuk cegah salah orang
+          if (outcome.distance > 0.33) {
+            const prev = pendingConfirmRef.current;
+            if (!prev || prev.subjectId !== outcome.subject_id) {
+              pendingConfirmRef.current = { subjectId: outcome.subject_id, count: 1 };
+              processingRef.current = false;
+              setStatusTone('ready');
+              setStatusMessage('Memastikan identitas...');
+              return;
+            }
+          }
+
           cooldownUntilRef.current = Date.now() + 3000;
           setStatusTone('success');
           setStatusMessage(`Terdeteksi: ${outcome.name}`);
@@ -321,13 +318,14 @@ export function FaceScanner({
           return;
         }
 
-        // Gagal cocok: tampilkan pesan dan scan ulang otomatis setelah jeda singkat
-        cooldownUntilRef.current = Date.now() + 1400;
+        // Tidak cocok atau ambigu
+        pendingConfirmRef.current = null;
+        cooldownUntilRef.current = Date.now() + 900;
         setFailCount((prev) => prev + 1);
         setStatusTone('error');
         setStatusMessage(
           outcome.reason === 'ambiguous'
-            ? 'Wajah mirip dengan profil lain, posisikan ulang lebih jelas'
+            ? 'Wajah mirip dengan profil lain, hadap lurus lebih jelas'
             : 'Wajah tidak dikenali, coba lagi'
         );
         resetChallenge();
@@ -341,7 +339,7 @@ export function FaceScanner({
 
     const handleVisibility = () => {
       if (document.hidden) {
-        steadyCountRef.current = 0;
+        pendingConfirmRef.current = null;
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
@@ -354,30 +352,28 @@ export function FaceScanner({
       }
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [cameraError, initializing, livenessHint, onResult, paused, purpose, resetChallenge]);
+  }, [cameraError, cameraReady, modelsReady, onResult, paused, purpose, resetChallenge]);
 
   const toneBadgeClasses = {
-    neutral: 'bg-slate-900/75 text-white border-white/20',
-    ready: 'bg-primary-600/90 text-white border-primary-300',
+    neutral: 'bg-slate-900/80 text-white border-white/20',
+    ready: 'bg-primary-600/95 text-white border-primary-300',
     success: 'bg-emerald-600/95 text-white border-emerald-300',
-    warn: 'bg-amber-600/90 text-white border-amber-300',
+    warn: 'bg-amber-600/95 text-white border-amber-300',
     error: 'bg-red-600/95 text-white border-red-300',
   }[statusTone];
 
   return (
-    <div className="w-full max-w-4xl mx-auto rounded-2xl bg-surface border-2 border-border-sky shadow-card overflow-hidden">
-      <div className="px-6 py-4 border-b border-border-sky flex items-center justify-between gap-4 bg-white">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary-100 text-primary-700 flex items-center justify-center">
-            <ScanFace className="w-6 h-6" />
+    <div className="w-full max-w-md mx-auto rounded-2xl bg-surface border-2 border-border-sky shadow-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border-sky flex items-center justify-between gap-3 bg-white">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-9 h-9 rounded-xl bg-primary-100 text-primary-700 flex items-center justify-center shrink-0">
+            <ScanFace className="w-5 h-5" />
           </div>
-          <div>
-            <h2 className="text-lg font-extrabold text-ink">
+          <div className="min-w-0">
+            <h2 className="text-base font-extrabold text-ink truncate">
               {title ?? (purpose === 'employee' ? 'Scan Wajah Karyawan' : 'Scan Wajah Pengawal')}
             </h2>
-            <p className="text-xs text-ink-muted">
-              {subtitle ?? 'Posisikan wajah di dalam bingkai oval dan ikuti instruksi singkat.'}
-            </p>
+            {subtitle && <p className="text-[11px] text-ink-muted truncate">{subtitle}</p>}
           </div>
         </div>
 
@@ -387,14 +383,15 @@ export function FaceScanner({
             stopCamera();
             onCancel();
           }}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-border-sky bg-white hover:bg-page px-4 py-2.5 text-sm font-semibold text-ink transition min-h-[44px]"
+          className="inline-flex items-center gap-1 rounded-xl border border-border-sky bg-white hover:bg-page px-3 py-2 text-xs font-bold text-ink transition shrink-0 min-h-[40px]"
         >
           <X className="w-4 h-4" />
           <span>Batal</span>
         </button>
       </div>
 
-      <div className="relative bg-slate-950 aspect-video max-h-[520px] w-full flex items-center justify-center overflow-hidden">
+      {/* Container kamera portrait (3:4) optimal untuk tablet */}
+      <div className="relative bg-slate-950 aspect-[3/4] max-h-[68vh] w-full flex items-center justify-center overflow-hidden">
         <video
           ref={videoRef}
           playsInline
@@ -403,46 +400,45 @@ export function FaceScanner({
           className="w-full h-full object-cover mirror-video"
         />
 
-        {/* Overlay Oval Panduan */}
+        {/* Overlay Oval Panduan Portrait */}
         {!cameraError && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div
-              className={`w-56 h-72 sm:w-64 sm:h-80 rounded-[999px] border-4 transition-colors duration-300 shadow-[0_0_0_9999px_rgba(15,23,42,0.42)] ${
+              className={`w-[64%] h-[62%] rounded-[999px] border-4 transition-colors duration-200 shadow-[0_0_0_9999px_rgba(15,23,42,0.45)] ${
                 statusTone === 'success'
                   ? 'border-emerald-400'
                   : statusTone === 'error'
                     ? 'border-red-400'
                     : statusTone === 'ready'
                       ? 'border-primary'
-                      : 'border-white/75'
+                      : 'border-white/80'
               }`}
             />
           </div>
         )}
 
-        {/* Loading Overlay */}
-        {initializing && !cameraError && (
-          <div className="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center text-white gap-3 p-6 text-center">
+        {/* Loading Overlay hanya saat kamera belum menyala */}
+        {!cameraReady && !cameraError && (
+          <div className="absolute inset-0 bg-slate-950/85 flex flex-col items-center justify-center text-white gap-3 p-6 text-center">
             <Loader2 className="w-10 h-10 animate-spin text-primary" />
-            <p className="text-base font-bold">Menyalakan kamera & memuat model AI...</p>
-            <p className="text-xs text-slate-300">Mohon tunggu beberapa detik pada scan pertama.</p>
+            <p className="text-sm font-bold">Menyalakan kamera depan...</p>
           </div>
         )}
 
         {/* Camera Error Overlay */}
         {cameraError && (
-          <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center text-white gap-4 p-8 text-center">
+          <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center text-white gap-4 p-6 text-center">
             <div className="w-14 h-14 rounded-2xl bg-danger/20 text-red-400 flex items-center justify-center">
               <Camera className="w-8 h-8" />
             </div>
-            <div className="max-w-md space-y-1.5">
-              <h3 className="text-lg font-bold">Kamera Tidak Dapat Diakses</h3>
-              <p className="text-sm text-slate-300">{cameraError}</p>
+            <div className="max-w-xs space-y-1.5">
+              <h3 className="text-base font-bold">Kamera Tidak Dapat Diakses</h3>
+              <p className="text-xs text-slate-300">{cameraError}</p>
             </div>
             <button
               type="button"
               onClick={() => setRetryCounter((c) => c + 1)}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-5 py-3 text-sm font-bold transition min-h-[48px]"
+              className="inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-5 py-3 text-sm font-bold transition min-h-[44px]"
             >
               <RefreshCw className="w-4 h-4" />
               <span>Coba Lagi</span>
@@ -451,17 +447,19 @@ export function FaceScanner({
         )}
 
         {/* Live Status Pill */}
-        {!initializing && !cameraError && (
-          <div className="absolute bottom-5 inset-x-4 flex flex-col items-center gap-2">
+        {cameraReady && !cameraError && (
+          <div className="absolute bottom-4 inset-x-3 flex justify-center">
             <div
-              className={`inline-flex items-center gap-2 rounded-2xl border px-5 py-2.5 text-sm sm:text-base font-bold shadow-lg backdrop-blur-md transition ${toneBadgeClasses}`}
+              className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-xs sm:text-sm font-bold shadow-lg backdrop-blur-md transition ${toneBadgeClasses}`}
             >
-              {statusTone === 'success' ? (
-                <CheckCircle2 className="w-5 h-5 shrink-0" />
+              {!modelsReady ? (
+                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+              ) : statusTone === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
               ) : statusTone === 'error' ? (
-                <AlertCircle className="w-5 h-5 shrink-0" />
+                <AlertCircle className="w-4 h-4 shrink-0" />
               ) : (
-                <Sparkles className="w-5 h-5 shrink-0" />
+                <Sparkles className="w-4 h-4 shrink-0" />
               )}
               <span>{statusMessage}</span>
             </div>
@@ -469,22 +467,18 @@ export function FaceScanner({
         )}
       </div>
 
-      {/* Fail 3x warning & suggestion */}
       {failCount >= 3 && (
-        <div className="px-6 py-3.5 bg-amber-50 border-t border-amber-200 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 text-sm text-amber-900 font-medium">
-            <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
-            <span>
-              Wajah gagal dikenali 3 kali. Pastikan pencahayaan cukup, atau hubungi admin untuk{' '}
-              <strong>Daftar Wajah</strong>.
-            </span>
+        <div className="px-4 py-3 bg-amber-50 border-t border-amber-200 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs text-amber-900 font-medium">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>Gagal 3 kali? Pastikan cahaya terang atau daftar ulang wajah.</span>
           </div>
           {showEnrollHintLink && (
             <Link
               href="/absen/daftar-wajah"
-              className="rounded-xl bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 text-xs font-bold transition"
+              className="rounded-lg bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 text-xs font-bold transition"
             >
-              Buka Daftar Wajah
+              Daftar Wajah
             </Link>
           )}
         </div>
@@ -492,4 +486,3 @@ export function FaceScanner({
     </div>
   );
 }
-

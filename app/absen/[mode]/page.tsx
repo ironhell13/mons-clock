@@ -45,6 +45,7 @@ export default function AbsenModePage({
 
   const meta = MODE_LABELS[mode];
   const [submitting, setSubmitting] = useState(false);
+  const [recognizedName, setRecognizedName] = useState<string | null>(null);
   const [successData, setSuccessData] = useState<{
     name: string;
     position: string;
@@ -61,6 +62,7 @@ export default function AbsenModePage({
     async (match: FaceMatchSuccess) => {
       if (submitting || successData || warningData) return;
       setSubmitting(true);
+      setRecognizedName(match.name);
       try {
         const res = await fetch('/api/absen', {
           method: 'POST',
@@ -104,6 +106,7 @@ export default function AbsenModePage({
         });
       } finally {
         setSubmitting(false);
+        setRecognizedName(null);
       }
     },
     [mode, submitting, successData, warningData]
@@ -115,19 +118,21 @@ export default function AbsenModePage({
   }, [router]);
 
   return (
-    <div className="flex-1 px-6 lg:px-10 py-5 max-w-5xl w-full mx-auto flex flex-col gap-4 justify-center">
-      <div className="flex items-center justify-between gap-4">
+    <div className="flex-1 px-4 sm:px-6 lg:px-10 py-4 max-w-2xl w-full mx-auto flex flex-col gap-3 justify-center">
+      <div className="flex items-center justify-between gap-3">
         <Link
           href="/absen"
-          className="inline-flex items-center gap-2 rounded-2xl border border-border-sky bg-white hover:bg-page px-4 py-3 text-sm font-bold text-ink shadow-sm transition min-h-[48px]"
+          className="inline-flex items-center gap-2 rounded-2xl border border-border-sky bg-white hover:bg-page px-4 py-2.5 text-sm font-bold text-ink shadow-sm transition min-h-[44px]"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Kembali</span>
         </Link>
         {submitting && (
-          <div className="inline-flex items-center gap-2 rounded-xl bg-primary-100 text-primary-700 px-4 py-2 text-sm font-bold">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Menyimpan absensi...</span>
+          <div className="inline-flex items-center gap-2 rounded-xl bg-primary-100 text-primary-700 px-3.5 py-2 text-xs sm:text-sm font-bold">
+            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+            <span>
+              {recognizedName ? `Terdeteksi ${recognizedName} — menyimpan...` : 'Menyimpan absensi...'}
+            </span>
           </div>
         )}
       </div>

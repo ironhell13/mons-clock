@@ -27,53 +27,50 @@ export async function POST(req: NextRequest) {
 
   const adminClient = createAdminClient();
 
-  // Cegah dua trip terbuka dengan nopol yang sama (termasuk untuk tipe berbeda)
-  const { data: openPlateTrip } = await adminClient
-    .from('trips')
-    .select('id, trip_type, plate')
-    .eq('plate', plate)
-    .is('return_at', null)
-    .limit(1)
-    .maybeSingle();
-
-  if (openPlateTrip) {
-    return NextResponse.json(
-      {
-        error: `Kendaraan ${plate} masih tercatat dalam perjalanan ${openPlateTrip.trip_type} yang belum kembali.`,
-      },
-      { status: 409 }
-    );
-  }
-
-  // Cegah staff yang masih memiliki trip terbuka pada tipe yang sama
+  // Jalankan seluruh pengecekan konflik dan referensi secara paralel
   const staffIds = staff2_id ? [staff1_id, staff2_id] : [staff1_id];
-  const { data: openStaffTrip } = await adminClient
-    .from('trips')
-    .select('id, plate, staff1_id, staff2_id')
-    .eq('trip_type', trip_type)
-    .is('return_at', null)
-    .or(
-      staffIds.map((id) => `staff1_id.eq.${id},staff2_id.eq.${id}`).join(',')
-    )
-    .limit(1)
-    .maybeSingle();
+  const [openPlateRes, openStaffRes, areaRes, staff1Res] = await Promise.all([
+    adminClient
+      .from('trips')
+      .select('id, trip_type, plate')
+      .eq('plate', plate)
+      .is('return_at', null)
+      .limit(1)
+      .maybeSingle(),
+    adminClient
+      .from('trips')
+      .select('id, plate, staff1_id, staff2_id')
+      .eq('trip_type', trip_type)
+      .is('return_at', null)
+      .or(staffIds.map((id) => `staff1_id.eq.${id},staff2_id.eq.${id}`).join(','))
+      .limit(1)
+      .maybeSingle(),
+    trip_type === 'FLM'
+      ? adminClient.from('areas').select('id, is_active').eq('id', area_id!).maybeSingle()
+      : Promise.resolve({ data: null }),
+    adminClient.from('employees').select('name, position').eq('id', staff1_id).single(),
+  ]);
 
-  if (openStaffTrip) {
+  if (openPlateRes.data) {
     return NextResponse.json(
       {
-        error: `Salah satu staff masih memiliki trip ${trip_type} aktif (${openStaffTrip.plate}) yang belum kembali.`,
+        error: `Kendaraan ${plate} masih tercatat dalam perjalanan ${openPlateRes.data.trip_type} yang belum kembali.`,
       },
       { status: 409 }
     );
   }
 
-  // Untuk FLM, validasi area wajib ada di master areas
+  if (openStaffRes.data) {
+    return NextResponse.json(
+      {
+        error: `Salah satu staff masih memiliki trip ${trip_type} aktif (${openStaffRes.data.plate}) yang belum kembali.`,
+      },
+      { status: 409 }
+    );
+  }
+
   if (trip_type === 'FLM') {
-    const { data: areaRow } = await adminClient
-      .from('areas')
-      .select('id, is_active')
-      .eq('id', area_id!)
-      .maybeSingle();
+    const areaRow = areaRes.data as { id: string; is_active: boolean } | null;
     if (!areaRow || !areaRow.is_active) {
       return NextResponse.json(
         { error: 'Area FLM harus dipilih dari data master yang aktif.' },
@@ -82,11 +79,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const { data: staff1Row } = await adminClient
-    .from('employees')
-    .select('name, position')
-    .eq('id', staff1_id)
-    .single();
+  const staff1Row = staff1Res.data;
 
   const { data: inserted, error: insertErr } = await adminClient
     .from('trips')

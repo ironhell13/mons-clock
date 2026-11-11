@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from 'next/server';
+import { after, NextResponse, type NextRequest } from 'next/server';
 import { requireApiRole } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { attendanceScanSchema } from '@/lib/validators';
@@ -27,32 +27,49 @@ export async function POST(req: NextRequest) {
   const { employee_id, mode, match_distance } = parsed.data;
   const adminClient = createAdminClient();
 
-  const { data: employee, error: empErr } = await adminClient
-    .from('employees')
-    .select('id, name, position, is_active')
-    .eq('id', employee_id)
-    .single();
-
-  if (empErr || !employee || !employee.is_active) {
-    return NextResponse.json(
-      { error: 'Data karyawan tidak ditemukan atau tidak aktif.' },
-      { status: 404 }
-    );
-  }
-
   // Selalu gunakan waktu server (UTC) agar jam perangkat tidak bisa dimanipulasi
   const now = new Date();
   const nowIso = now.toISOString();
   const todayWib = getWibDateString(now);
   const twentyFourHoursAgoIso = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
 
+  // Jalankan query karyawan + cek kehadiran secara paralel untuk respon lebih cepat
+  const [empRes, attendanceLookup] = await Promise.all([
+    adminClient
+      .from('employees')
+      .select('id, name, position, is_active')
+      .eq('id', employee_id)
+      .single(),
+    mode === 'masuk'
+      ? adminClient
+          .from('attendance')
+          .select('id, masuk_at')
+          .eq('employee_id', employee_id)
+          .eq('work_date', todayWib)
+          .maybeSingle()
+      : adminClient
+          .from('attendance')
+          .select('id, masuk_at, istirahat_at, pulang_at')
+          .eq('employee_id', employee_id)
+          .not('masuk_at', 'is', null)
+          .is('pulang_at', null)
+          .gte('masuk_at', twentyFourHoursAgoIso)
+          .order('masuk_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+  ]);
+
+  if (empRes.error || !empRes.data || !empRes.data.is_active) {
+    return NextResponse.json(
+      { error: 'Data karyawan tidak ditemukan atau tidak aktif.' },
+      { status: 404 }
+    );
+  }
+
+  const employee = empRes.data;
+
   if (mode === 'masuk') {
-    const { data: existingToday } = await adminClient
-      .from('attendance')
-      .select('id, masuk_at')
-      .eq('employee_id', employee_id)
-      .eq('work_date', todayWib)
-      .maybeSingle();
+    const existingToday = attendanceLookup.data as { id: string; masuk_at: string | null } | null;
 
     if (existingToday?.masuk_at) {
       return NextResponse.json(
@@ -82,12 +99,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: upsertErr.message }, { status: 500 });
     }
 
-    await adminClient.from('attendance_events').insert({
-      employee_id,
-      attendance_id: upserted.id,
-      event_type: 'masuk',
-      occurred_at: nowIso,
-      match_distance,
+    after(async () => {
+      await adminClient.from('attendance_events').insert({
+        employee_id,
+        attendance_id: upserted.id,
+        event_type: 'masuk',
+        occurred_at: nowIso,
+        match_distance,
+      });
     });
 
     return NextResponse.json({
@@ -101,16 +120,12 @@ export async function POST(req: NextRequest) {
   }
 
   if (mode === 'istirahat') {
-    const { data: activeShift } = await adminClient
-      .from('attendance')
-      .select('id, masuk_at, istirahat_at, pulang_at')
-      .eq('employee_id', employee_id)
-      .not('masuk_at', 'is', null)
-      .is('pulang_at', null)
-      .gte('masuk_at', twentyFourHoursAgoIso)
-      .order('masuk_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const activeShift = attendanceLookup.data as {
+      id: string;
+      masuk_at: string | null;
+      istirahat_at: string | null;
+      pulang_at: string | null;
+    } | null;
 
     if (!activeShift) {
       return NextResponse.json(
@@ -142,12 +157,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: updateErr.message }, { status: 500 });
     }
 
-    await adminClient.from('attendance_events').insert({
-      employee_id,
-      attendance_id: activeShift.id,
-      event_type: 'istirahat',
-      occurred_at: nowIso,
-      match_distance,
+    after(async () => {
+      await adminClient.from('attendance_events').insert({
+        employee_id,
+        attendance_id: activeShift.id,
+        event_type: 'istirahat',
+        occurred_at: nowIso,
+        match_distance,
+      });
     });
 
     return NextResponse.json({
@@ -161,16 +178,11 @@ export async function POST(req: NextRequest) {
   }
 
   // mode === 'pulang' (mendukung shift melewati tengah malam hingga 24 jam ke belakang)
-  const { data: openShift } = await adminClient
-    .from('attendance')
-    .select('id, masuk_at, pulang_at')
-    .eq('employee_id', employee_id)
-    .not('masuk_at', 'is', null)
-    .is('pulang_at', null)
-    .gte('masuk_at', twentyFourHoursAgoIso)
-    .order('masuk_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const openShift = attendanceLookup.data as {
+    id: string;
+    masuk_at: string | null;
+    pulang_at: string | null;
+  } | null;
 
   if (!openShift) {
     const { data: todayRow } = await adminClient
@@ -209,12 +221,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: pulangErr.message }, { status: 500 });
   }
 
-  await adminClient.from('attendance_events').insert({
-    employee_id,
-    attendance_id: openShift.id,
-    event_type: 'pulang',
-    occurred_at: nowIso,
-    match_distance,
+  after(async () => {
+    await adminClient.from('attendance_events').insert({
+      employee_id,
+      attendance_id: openShift.id,
+      event_type: 'pulang',
+      occurred_at: nowIso,
+      match_distance,
+    });
   });
 
   return NextResponse.json({
@@ -226,4 +240,3 @@ export async function POST(req: NextRequest) {
     formattedTime: formatWibTimeSeconds(now),
   });
 }
-
