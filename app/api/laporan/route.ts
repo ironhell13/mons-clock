@@ -47,9 +47,9 @@ export async function GET(req: NextRequest) {
         .from('audit_logs')
         .select('id, user_id, action, table_name, record_id, reason, payload, created_at')
         .eq('table_name', 'attendance')
-        .eq('action', 'admin_correction')
+        .in('action', ['admin_correction', 'admin_delete'])
         .order('created_at', { ascending: false })
-        .limit(30),
+        .limit(40),
     ]);
 
     if (attRes.error) {
@@ -130,9 +130,9 @@ export async function GET(req: NextRequest) {
         .from('audit_logs')
         .select('id, user_id, action, table_name, record_id, reason, payload, created_at')
         .eq('table_name', 'trips')
-        .eq('action', 'admin_correction')
+        .in('action', ['admin_correction', 'admin_delete'])
         .order('created_at', { ascending: false })
-        .limit(30),
+        .limit(40),
     ]);
 
     if (tripsRes.error) {
@@ -347,5 +347,57 @@ export async function PATCH(req: NextRequest) {
   }
 
   return NextResponse.json({ error: 'Target koreksi tidak valid.' }, { status: 400 });
+}
+
+export async function DELETE(req: NextRequest) {
+  const auth = await requireApiRole(['admin', 'superadmin']);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const target = body.target;
+  const id = typeof body.id === 'string' ? body.id : '';
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+
+  if ((target !== 'attendance' && target !== 'trip') || !id) {
+    return NextResponse.json({ error: 'Parameter hapus tidak valid.' }, { status: 400 });
+  }
+
+  if (reason.length < 3) {
+    return NextResponse.json(
+      { error: 'Alasan penghapusan wajib diisi (minimal 3 karakter).' },
+      { status: 400 }
+    );
+  }
+
+  const tableName = target === 'attendance' ? 'attendance' : 'trips';
+  const supabase = await createClient();
+
+  const { data: beforeRow, error: findErr } = await supabase
+    .from(tableName)
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (findErr || !beforeRow) {
+    return NextResponse.json({ error: 'Data tidak ditemukan.' }, { status: 404 });
+  }
+
+  const { error: delErr } = await supabase.from(tableName).delete().eq('id', id);
+  if (delErr) {
+    return NextResponse.json({ error: delErr.message }, { status: 400 });
+  }
+
+  await supabase.from('audit_logs').insert({
+    user_id: auth.session.userId,
+    action: 'admin_delete',
+    table_name: tableName,
+    record_id: id,
+    reason,
+    payload: { deleted: beforeRow },
+  });
+
+  return NextResponse.json({ success: true });
 }
 

@@ -11,6 +11,7 @@ import {
   Loader2,
   Plus,
   Search,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -25,6 +26,11 @@ import { Modal } from '@/components/ui/Modal';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { TableSkeleton } from '@/components/ui/Skeleton';
 import { DataTablePagination } from '@/components/ui/DataTablePagination';
+import {
+  AuditLogsModal,
+  DeleteLaporanModal,
+  type LaporanAuditItem,
+} from '@/components/admin/LaporanActionModals';
 
 interface AttendanceRow {
   id: string;
@@ -43,18 +49,10 @@ interface EmployeeOption {
   employee_no: string;
 }
 
-interface AuditItem {
-  id: string;
-  reason: string | null;
-  actor_name: string;
-  created_at: string;
-  payload: Record<string, unknown>;
-}
-
 export function LaporanKaryawanClient() {
   const [items, setItems] = useState<AttendanceRow[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<LaporanAuditItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [fromDate, setFromDate] = useState('');
@@ -66,6 +64,8 @@ export function LaporanKaryawanClient() {
   const [pageSize, setPageSize] = useState(15);
 
   const [auditOpen, setAuditOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AttendanceRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState<AttendanceRow | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [corrEmployeeId, setCorrEmployeeId] = useState('');
@@ -87,7 +87,7 @@ export function LaporanKaryawanClient() {
       const json = (await res.json()) as {
         items?: AttendanceRow[];
         employees?: EmployeeOption[];
-        auditLogs?: AuditItem[];
+        auditLogs?: LaporanAuditItem[];
         error?: string;
       };
       if (!res.ok) {
@@ -353,14 +353,25 @@ export function LaporanKaryawanClient() {
                     <td className="px-4 py-3 font-semibold text-ink">{row.employee?.name ?? '-'}</td>
                     <td className="px-4 py-3 text-ink-muted">{row.employee?.position ?? '-'}</td>
                     <td className="px-4 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => openCorrection(row)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-border-sky bg-white hover:bg-primary-50 hover:text-primary-700 px-2.5 py-1.5 text-xs font-semibold transition"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        <span>Koreksi</span>
-                      </button>
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openCorrection(row)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border-sky bg-white hover:bg-primary-50 hover:text-primary-700 px-2.5 py-1.5 text-xs font-semibold transition"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Koreksi</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(row)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border-sky bg-white hover:bg-danger/10 hover:border-danger/30 hover:text-danger px-2.5 py-1.5 text-xs font-semibold transition"
+                          title="Hapus data absensi"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hapus</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -482,31 +493,43 @@ export function LaporanKaryawanClient() {
         </form>
       </Modal>
 
-      {/* Modal Audit Log */}
-      <Modal
+      <DeleteLaporanModal
+        open={Boolean(deleteTarget)}
+        title="Hapus Mutasi Karyawan?"
+        summary={`Data absensi "${deleteTarget?.employee?.name ?? '-'}" tanggal ${deleteTarget?.work_date ?? '-'} akan dihapus permanen.`}
+        loading={deleting}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={async (reason) => {
+          if (!deleteTarget) return;
+          setDeleting(true);
+          try {
+            const res = await fetch('/api/laporan', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ target: 'attendance', id: deleteTarget.id, reason }),
+            });
+            const json = (await res.json()) as { error?: string };
+            if (!res.ok) {
+              toast.error(json.error ?? 'Gagal menghapus data absensi.');
+              return;
+            }
+            toast.success('Data absensi berhasil dihapus dan tercatat di Audit Log.');
+            setDeleteTarget(null);
+            await loadData();
+          } catch {
+            toast.error('Gagal terhubung ke server.');
+          } finally {
+            setDeleting(false);
+          }
+        }}
+      />
+
+      <AuditLogsModal
         open={auditOpen}
         onClose={() => setAuditOpen(false)}
-        title="Riwayat Koreksi Absensi (Audit Log)"
-        maxWidthClass="max-w-2xl"
-      >
-        {auditLogs.length === 0 ? (
-          <p className="text-sm text-ink-muted py-6 text-center">Belum ada riwayat koreksi.</p>
-        ) : (
-          <div className="space-y-3 max-h-96 overflow-y-auto">
-            {auditLogs.map((log) => (
-              <div key={log.id} className="rounded-xl bg-page border border-border-sky p-3.5 text-xs space-y-1">
-                <div className="flex justify-between font-bold text-ink">
-                  <span>Oleh: {log.actor_name}</span>
-                  <span className="text-ink-muted">{formatWibDateTime(log.created_at)} WIB</span>
-                </div>
-                <div className="text-ink-muted">
-                  Alasan: <strong className="text-ink">{log.reason || '-'}</strong>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Modal>
+        title="Riwayat Koreksi & Hapus Absensi (Audit Log)"
+        auditLogs={auditLogs}
+      />
     </div>
   );
 }

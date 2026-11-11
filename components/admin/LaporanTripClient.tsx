@@ -9,6 +9,7 @@ import {
   History,
   Loader2,
   Search,
+  Trash2,
   Truck,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -25,6 +26,11 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { TableSkeleton } from '@/components/ui/Skeleton';
 import { DataTablePagination } from '@/components/ui/DataTablePagination';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+import {
+  AuditLogsModal,
+  DeleteLaporanModal,
+  type LaporanAuditItem,
+} from '@/components/admin/LaporanActionModals';
 
 interface TripReportRow {
   id: string;
@@ -47,13 +53,6 @@ interface TripReportRow {
   area: { id: string; name: string } | null;
 }
 
-interface AuditItem {
-  id: string;
-  reason: string | null;
-  actor_name: string;
-  created_at: string;
-}
-
 export function LaporanTripClient({ tripType }: { tripType: TripType }) {
   const kind = tripType.toLowerCase();
   const [items, setItems] = useState<TripReportRow[]>([]);
@@ -61,7 +60,7 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
   const [escorts, setEscorts] = useState<{ id: string; name: string; vendor: string }[]>([]);
   const [plates, setPlates] = useState<string[]>([]);
   const [areas, setAreas] = useState<{ id: string; name: string }[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<LaporanAuditItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [fromDate, setFromDate] = useState('');
@@ -74,6 +73,8 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
   const [pageSize, setPageSize] = useState(15);
 
   const [auditOpen, setAuditOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<TripReportRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState<TripReportRow | null>(null);
   const [corrDepart, setCorrDepart] = useState('');
   const [corrReturn, setCorrReturn] = useState('');
@@ -103,7 +104,7 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
         escorts?: { id: string; name: string; vendor: string }[];
         plates?: string[];
         areas?: { id: string; name: string }[];
-        auditLogs?: AuditItem[];
+        auditLogs?: LaporanAuditItem[];
         error?: string;
       };
       if (!res.ok) {
@@ -409,14 +410,25 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
                       {tripType === 'FLM' ? row.area?.name ?? '-' : row.run_code ?? '-'}
                     </td>
                     <td className="px-3 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => openCorrection(row)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-border-sky bg-white hover:bg-primary-50 hover:text-primary-700 px-2.5 py-1.5 text-xs font-semibold transition"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        <span>Koreksi</span>
-                      </button>
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openCorrection(row)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border-sky bg-white hover:bg-primary-50 hover:text-primary-700 px-2.5 py-1.5 text-xs font-semibold transition"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Koreksi</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(row)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border-sky bg-white hover:bg-danger/10 hover:border-danger/30 hover:text-danger px-2.5 py-1.5 text-xs font-semibold transition"
+                          title={`Hapus data mutasi ${tripType}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hapus</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -591,30 +603,43 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
         </form>
       </Modal>
 
-      <Modal
+      <DeleteLaporanModal
+        open={Boolean(deleteTarget)}
+        title={`Hapus Mutasi ${tripType}?`}
+        summary={`Data perjalanan ${tripType} oleh "${deleteTarget?.staff1?.name ?? '-'}" (Nopol ${deleteTarget?.plate ?? '-'}) akan dihapus permanen.`}
+        loading={deleting}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={async (reason) => {
+          if (!deleteTarget) return;
+          setDeleting(true);
+          try {
+            const res = await fetch('/api/laporan', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ target: 'trip', id: deleteTarget.id, reason }),
+            });
+            const json = (await res.json()) as { error?: string };
+            if (!res.ok) {
+              toast.error(json.error ?? `Gagal menghapus data ${tripType}.`);
+              return;
+            }
+            toast.success(`Data mutasi ${tripType} berhasil dihapus dan tercatat di Audit Log.`);
+            setDeleteTarget(null);
+            await loadData();
+          } catch {
+            toast.error('Gagal terhubung ke server.');
+          } finally {
+            setDeleting(false);
+          }
+        }}
+      />
+
+      <AuditLogsModal
         open={auditOpen}
         onClose={() => setAuditOpen(false)}
-        title={`Riwayat Koreksi Trip (Audit Log)`}
-        maxWidthClass="max-w-2xl"
-      >
-        {auditLogs.length === 0 ? (
-          <p className="text-sm text-ink-muted py-6 text-center">Belum ada riwayat koreksi.</p>
-        ) : (
-          <div className="space-y-3 max-h-96 overflow-y-auto">
-            {auditLogs.map((log) => (
-              <div key={log.id} className="rounded-xl bg-page border border-border-sky p-3.5 text-xs space-y-1">
-                <div className="flex justify-between font-bold text-ink">
-                  <span>Oleh: {log.actor_name}</span>
-                  <span className="text-ink-muted">{formatWibDateTime(log.created_at)} WIB</span>
-                </div>
-                <div className="text-ink-muted">
-                  Alasan: <strong className="text-ink">{log.reason || '-'}</strong>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Modal>
+        title={`Riwayat Koreksi & Hapus ${tripType} (Audit Log)`}
+        auditLogs={auditLogs}
+      />
     </div>
   );
 }
