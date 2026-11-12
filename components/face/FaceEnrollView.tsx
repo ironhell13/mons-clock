@@ -20,7 +20,8 @@ import {
 } from '@/lib/face';
 import {
   analyzeMediaPipeResult,
-  checkVideoFrameQuality,
+  capturePortraitSampleCanvas,
+  checkCanvasQuality,
   getFaceLandmarker,
   type NormalizedFaceBox,
 } from '@/lib/mediapipe';
@@ -32,7 +33,6 @@ interface EnrollmentStep {
   checkPose: (yaw: number) => boolean;
 }
 
-// 3 langkah cepat & natural (tanpa dangak ke atas / tunduk ekstrem) agar akurasi descriptor optimal
 const ENROLLMENT_STEPS: EnrollmentStep[] = [
   {
     key: 'lurus',
@@ -73,8 +73,7 @@ export function FaceEnrollView({
 }: FaceEnrollViewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const lastCheckRef = useRef<number>(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const capturingRef = useRef<boolean>(false);
   const stepIndexRef = useRef<number>(0);
   const samplesRef = useRef<{ descriptor: number[]; sample_label: string }[]>([]);
@@ -91,9 +90,9 @@ export function FaceEnrollView({
   const [retryCounter, setRetryCounter] = useState(0);
 
   const stopCamera = useCallback(() => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -141,10 +140,13 @@ export function FaceEnrollView({
     const video = videoRef.current;
     if (!video || capturingRef.current || saving) return;
 
-    const quality = checkVideoFrameQuality(video);
-    if (!quality.ok) {
-      setStatusMessage(quality.reason ?? 'Kualitas gambar kurang baik.');
-      return;
+    const sampleCanvas = capturePortraitSampleCanvas(video);
+    if (sampleCanvas) {
+      const quality = checkCanvasQuality(sampleCanvas);
+      if (!quality.ok) {
+        setStatusMessage(quality.reason ?? 'Kualitas gambar kurang baik.');
+        return;
+      }
     }
 
     capturingRef.current = true;
@@ -156,7 +158,6 @@ export function FaceEnrollView({
         return;
       }
 
-      // Cek ketat (0.46) agar tidak bertabrakan dengan orang lain yang sudah terdaftar
       const allTemplates = await getCachedFaceTemplates(subjectType);
       const otherTemplates = allTemplates.filter((t) => t.subject_id !== subjectId);
       const conflict = matchDescriptor(descriptor, otherTemplates, 0.46);
@@ -204,7 +205,12 @@ export function FaceEnrollView({
 
       try {
         const streamPromise = navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 960 } },
+          video: {
+            facingMode: 'user',
+            width: { ideal: 480 },
+            height: { ideal: 640 },
+            frameRate: { ideal: 24, max: 30 },
+          },
           audio: false,
         });
 
@@ -254,47 +260,67 @@ export function FaceEnrollView({
     if (!cameraReady || !modelsReady || cameraError || saving || duplicateWarning) return;
     let active = true;
 
-    const tick = async (ts: number) => {
+    const scheduleNext = (ms: number) => {
       if (!active) return;
-      rafRef.current = requestAnimationFrame(tick);
-      if (document.hidden || capturingRef.current) return;
-      if (Date.now() - lastCaptureAtRef.current < 380) return;
-      if (ts - lastCheckRef.current < 100) return;
+      timerRef.current = setTimeout(runStep, ms);
+    };
 
-      lastCheckRef.current = ts;
+    const runStep = async () => {
+      if (!active) return;
+      if (document.hidden || capturingRef.current || Date.now() - lastCaptureAtRef.current < 420) {
+        scheduleNext(240);
+        return;
+      }
+
       const video = videoRef.current;
-      if (!video || video.readyState < 2 || !video.videoWidth) return;
+      if (!video || video.readyState < 2 || !video.videoWidth) {
+        scheduleNext(240);
+        return;
+      }
 
       const idx = stepIndexRef.current;
       if (idx >= ENROLLMENT_STEPS.length) return;
       const step = ENROLLMENT_STEPS[idx];
 
       try {
+        const sampleCanvas = capturePortraitSampleCanvas(video);
+        if (!sampleCanvas) {
+          scheduleNext(240);
+          return;
+        }
+
         const landmarker = await getFaceLandmarker();
-        const mpRes = landmarker.detectForVideo(video, performance.now());
+        const mpRes = landmarker.detectForVideo(sampleCanvas, performance.now());
         const analysis = analyzeMediaPipeResult(mpRes);
         lastBoxRef.current = analysis.box;
 
         if (!analysis.statusOk) {
           setStatusMessage(analysis.message);
+          scheduleNext(240);
           return;
         }
 
         if (!step.checkPose(analysis.yaw)) {
           setStatusMessage(step.instruction);
+          scheduleNext(220);
           return;
         }
 
         await captureCurrentStep();
+        scheduleNext(350);
       } catch {
-        // lanjut frame berikut
+        scheduleNext(300);
       }
     };
 
-    rafRef.current = requestAnimationFrame(tick);
+    scheduleNext(220);
+
     return () => {
       active = false;
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
     };
   }, [cameraError, cameraReady, captureCurrentStep, duplicateWarning, modelsReady, saving]);
 
@@ -308,7 +334,6 @@ export function FaceEnrollView({
         </div>
       </div>
 
-      {/* Stepper 1/3 .. 3/3 */}
       <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
         {ENROLLMENT_STEPS.map((step, idx) => {
           const done = idx < stepIndex;
@@ -348,7 +373,7 @@ export function FaceEnrollView({
         </div>
       )}
 
-      {/* Kamera Portrait 3:4 */}
+      {/* Kamera Portrait 3:4 ringan tanpa shadow/blur berat */}
       <div className="relative bg-slate-950 rounded-2xl overflow-hidden aspect-[3/4] max-w-[360px] max-h-[56vh] w-full mx-auto flex items-center justify-center">
         <video
           ref={videoRef}
@@ -360,12 +385,12 @@ export function FaceEnrollView({
 
         {!cameraError && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div className="w-[64%] h-[62%] rounded-[999px] border-4 border-primary/90 shadow-[0_0_0_9999px_rgba(15,23,42,0.45)]" />
+            <div className="w-[64%] h-[62%] rounded-[999px] border-[3px] border-primary/90" />
           </div>
         )}
 
         {(!cameraReady || saving) && !cameraError && (
-          <div className="absolute inset-0 bg-slate-950/75 flex flex-col items-center justify-center text-white gap-2.5">
+          <div className="absolute inset-0 bg-slate-950/85 flex flex-col items-center justify-center text-white gap-2.5">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
             <span className="text-sm font-bold">{statusMessage}</span>
           </div>
@@ -388,7 +413,7 @@ export function FaceEnrollView({
 
         {cameraReady && !saving && !cameraError && (
           <div className="absolute bottom-3 inset-x-3 flex justify-center">
-            <div className="inline-flex items-center gap-2 rounded-xl bg-slate-900/85 border border-white/20 px-3.5 py-2 text-xs sm:text-sm font-bold text-white backdrop-blur">
+            <div className="inline-flex items-center gap-2 rounded-xl bg-slate-900/90 border border-white/20 px-3.5 py-2 text-xs sm:text-sm font-bold text-white">
               {!modelsReady && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
               <span>
                 {modelsReady

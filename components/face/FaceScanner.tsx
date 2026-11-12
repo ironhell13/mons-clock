@@ -23,7 +23,8 @@ import {
 } from '@/lib/face';
 import {
   analyzeMediaPipeResult,
-  checkVideoFrameQuality,
+  capturePortraitSampleCanvas,
+  checkCanvasQuality,
   getFaceLandmarker,
 } from '@/lib/mediapipe';
 
@@ -48,8 +49,7 @@ export function FaceScanner({
 }: FaceScannerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const lastDetectMsRef = useRef<number>(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCacheRefreshRef = useRef<number>(0);
   const templatesRef = useRef<CachedFaceTemplate[]>([]);
   const processingRef = useRef<boolean>(false);
@@ -68,9 +68,9 @@ export function FaceScanner({
   const [retryCounter, setRetryCounter] = useState(0);
 
   const stopCamera = useCallback(() => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -103,17 +103,17 @@ export function FaceScanner({
           throw new Error('UNSUPPORTED_CAMERA');
         }
 
-        // Buka kamera segera dengan resolusi portrait ringan
+        // Resolusi ringan 480x640 agar preview mulus 30fps di tablet RAM 3GB
         const streamPromise = navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width: { ideal: 720 },
-            height: { ideal: 960 },
+            width: { ideal: 480 },
+            height: { ideal: 640 },
+            frameRate: { ideal: 24, max: 30 },
           },
           audio: false,
         });
 
-        // Paralelkan preload model dan template wajah
         const modelsPromise = Promise.all([
           getCachedFaceTemplates(purpose),
           getFaceLandmarker(),
@@ -151,7 +151,7 @@ export function FaceScanner({
           );
         } else {
           setStatusTone('neutral');
-          setStatusMessage('Posisikan wajah di dalam bingkai oval');
+          setStatusMessage('Posisikan wajah di dalam bingkai');
         }
       } catch (err) {
         if (cancelled) return;
@@ -187,26 +187,32 @@ export function FaceScanner({
     };
   }, [purpose, retryCounter, stopCamera]);
 
-  // Loop deteksi ~11 fps, berhenti otomatis saat tab tidak aktif
+  // Gunakan penjadwalan interval 250ms (~4 fps) agar GPU/CPU punya jeda penuh me-render video mulus 30fps
   useEffect(() => {
     if (!cameraReady || !modelsReady || cameraError || paused) return;
 
     let active = true;
 
-    const tick = async (timestamp: number) => {
+    const scheduleNext = (delayMs: number) => {
       if (!active) return;
-      rafRef.current = requestAnimationFrame(tick);
+      timerRef.current = setTimeout(runStep, delayMs);
+    };
 
-      if (document.hidden) return;
-      if (processingRef.current) return;
-      if (Date.now() < cooldownUntilRef.current) return;
-      if (timestamp - lastDetectMsRef.current < 90) return;
+    const runStep = async () => {
+      if (!active) return;
 
-      lastDetectMsRef.current = timestamp;
+      if (document.hidden || processingRef.current || Date.now() < cooldownUntilRef.current) {
+        scheduleNext(260);
+        return;
+      }
+
       const video = videoRef.current;
-      if (!video || video.readyState < 2 || !video.videoWidth) return;
+      if (!video || video.readyState < 2 || !video.videoWidth) {
+        scheduleNext(260);
+        return;
+      }
 
-      // Refresh cache tiap 3 menit di background
+      // Refresh cache tiap 3 menit
       if (Date.now() - lastCacheRefreshRef.current > 3 * 60 * 1000) {
         lastCacheRefreshRef.current = Date.now();
         getCachedFaceTemplates(purpose, true)
@@ -223,22 +229,29 @@ export function FaceScanner({
             ? 'Belum ada wajah karyawan terdaftar. Silakan Daftar Wajah terlebih dahulu.'
             : 'Belum ada wajah pengawal terdaftar. Silakan Daftar Wajah terlebih dahulu.'
         );
+        scheduleNext(800);
         return;
       }
 
       try {
+        const sampleCanvas = capturePortraitSampleCanvas(video);
+        if (!sampleCanvas) {
+          scheduleNext(250);
+          return;
+        }
+
         const landmarker = await getFaceLandmarker();
-        const mpRes = landmarker.detectForVideo(video, performance.now());
+        const mpRes = landmarker.detectForVideo(sampleCanvas, performance.now());
         const analysis = analyzeMediaPipeResult(mpRes);
 
         if (!analysis.statusOk || !analysis.box) {
           pendingConfirmRef.current = null;
           setStatusTone('neutral');
           setStatusMessage(analysis.message);
+          scheduleNext(240);
           return;
         }
 
-        // Liveness alami: berkedip atau gerakan kepala alami ringan (tolak foto statis)
         const nose = mpRes.faceLandmarks[0]?.[1];
         if (nose && prevNosePosRef.current) {
           const dist = Math.hypot(
@@ -256,28 +269,30 @@ export function FaceScanner({
         if (!livenessPassedRef.current) {
           if (
             analysis.isBlinking ||
-            motionAccumRef.current >= 0.012 ||
-            Math.abs(analysis.yaw) >= 0.055
+            motionAccumRef.current >= 0.009 ||
+            Math.abs(analysis.yaw) >= 0.05
           ) {
             livenessPassedRef.current = true;
           } else {
             setStatusTone('ready');
             setStatusMessage('Berkedip atau gerakkan wajah sedikit');
+            scheduleNext(220);
             return;
           }
         }
 
-        // Pastikan wajah cukup menghadap depan saat ekstrak descriptor agar akurat
         if (Math.abs(analysis.yaw) > 0.14) {
           setStatusTone('ready');
           setStatusMessage('Hadapkan wajah lurus ke kamera');
+          scheduleNext(220);
           return;
         }
 
-        const frameQuality = checkVideoFrameQuality(video);
-        if (!frameQuality.ok) {
+        const quality = checkCanvasQuality(sampleCanvas);
+        if (!quality.ok) {
           setStatusTone('warn');
-          setStatusMessage(frameQuality.reason ?? 'Sesuaikan pencahayaan dan stabilitas kamera');
+          setStatusMessage(quality.reason ?? 'Sesuaikan pencahayaan kamera');
+          scheduleNext(260);
           return;
         }
 
@@ -285,25 +300,30 @@ export function FaceScanner({
         setStatusTone('ready');
         setStatusMessage('Memverifikasi wajah...');
 
+        // Beri jeda 1 frame agar UI status sempat ter-paint sebelum inferensi TFJS
+        await new Promise((resolve) => setTimeout(resolve, 16));
+        if (!active) return;
+
         const descriptor = await extractFaceDescriptor(video, analysis.box);
         if (!descriptor) {
           processingRef.current = false;
           setStatusTone('warn');
           setStatusMessage('Wajah kurang jelas, tahan sebentar...');
+          scheduleNext(240);
           return;
         }
 
         const outcome = matchDescriptor(descriptor, templatesRef.current);
 
         if (outcome.matched) {
-          // Jika jarak > 0.33, wajib konfirmasi 2 frame berturut-turut untuk cegah salah orang
-          if (outcome.distance > 0.33) {
+          if (outcome.distance > 0.34) {
             const prev = pendingConfirmRef.current;
             if (!prev || prev.subjectId !== outcome.subject_id) {
               pendingConfirmRef.current = { subjectId: outcome.subject_id, count: 1 };
               processingRef.current = false;
               setStatusTone('ready');
               setStatusMessage('Memastikan identitas...');
+              scheduleNext(160);
               return;
             }
           }
@@ -318,7 +338,6 @@ export function FaceScanner({
           return;
         }
 
-        // Tidak cocok atau ambigu
         pendingConfirmRef.current = null;
         cooldownUntilRef.current = Date.now() + 900;
         setFailCount((prev) => prev + 1);
@@ -330,12 +349,15 @@ export function FaceScanner({
         );
         resetChallenge();
         processingRef.current = false;
+        scheduleNext(300);
       } catch {
         processingRef.current = false;
+        scheduleNext(350);
       }
     };
 
-    rafRef.current = requestAnimationFrame(tick);
+    // Beri jeda 220ms agar feed video kamera stabil terlebih dahulu
+    scheduleNext(220);
 
     const handleVisibility = () => {
       if (document.hidden) {
@@ -346,20 +368,20 @@ export function FaceScanner({
 
     return () => {
       active = false;
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
       }
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [cameraError, cameraReady, modelsReady, onResult, paused, purpose, resetChallenge]);
 
   const toneBadgeClasses = {
-    neutral: 'bg-slate-900/80 text-white border-white/20',
-    ready: 'bg-primary-600/95 text-white border-primary-300',
-    success: 'bg-emerald-600/95 text-white border-emerald-300',
-    warn: 'bg-amber-600/95 text-white border-amber-300',
-    error: 'bg-red-600/95 text-white border-red-300',
+    neutral: 'bg-slate-900/90 text-white border-white/20',
+    ready: 'bg-primary-600 text-white border-primary-300',
+    success: 'bg-emerald-600 text-white border-emerald-300',
+    warn: 'bg-amber-600 text-white border-amber-300',
+    error: 'bg-red-600 text-white border-red-300',
   }[statusTone];
 
   return (
@@ -390,7 +412,7 @@ export function FaceScanner({
         </button>
       </div>
 
-      {/* Container kamera portrait (3:4) optimal untuk tablet */}
+      {/* Container kamera portrait 3:4 tanpa shadow/blur berat agar smooth 30fps di Mali GPU */}
       <div className="relative bg-slate-950 aspect-[3/4] max-h-[68vh] w-full flex items-center justify-center overflow-hidden">
         <video
           ref={videoRef}
@@ -400,32 +422,30 @@ export function FaceScanner({
           className="w-full h-full object-cover mirror-video"
         />
 
-        {/* Overlay Oval Panduan Portrait */}
+        {/* Overlay Oval Ringan (border-only tanpa box-shadow 9999px) */}
         {!cameraError && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div
-              className={`w-[64%] h-[62%] rounded-[999px] border-4 transition-colors duration-200 shadow-[0_0_0_9999px_rgba(15,23,42,0.45)] ${
+              className={`w-[64%] h-[62%] rounded-[999px] border-[3px] transition-colors duration-200 ${
                 statusTone === 'success'
                   ? 'border-emerald-400'
                   : statusTone === 'error'
                     ? 'border-red-400'
                     : statusTone === 'ready'
                       ? 'border-primary'
-                      : 'border-white/80'
+                      : 'border-white/85'
               }`}
             />
           </div>
         )}
 
-        {/* Loading Overlay hanya saat kamera belum menyala */}
         {!cameraReady && !cameraError && (
-          <div className="absolute inset-0 bg-slate-950/85 flex flex-col items-center justify-center text-white gap-3 p-6 text-center">
+          <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center text-white gap-3 p-6 text-center">
             <Loader2 className="w-10 h-10 animate-spin text-primary" />
             <p className="text-sm font-bold">Menyalakan kamera depan...</p>
           </div>
         )}
 
-        {/* Camera Error Overlay */}
         {cameraError && (
           <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center text-white gap-4 p-6 text-center">
             <div className="w-14 h-14 rounded-2xl bg-danger/20 text-red-400 flex items-center justify-center">
@@ -446,11 +466,10 @@ export function FaceScanner({
           </div>
         )}
 
-        {/* Live Status Pill */}
         {cameraReady && !cameraError && (
           <div className="absolute bottom-4 inset-x-3 flex justify-center">
             <div
-              className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-xs sm:text-sm font-bold shadow-lg backdrop-blur-md transition ${toneBadgeClasses}`}
+              className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-xs sm:text-sm font-bold shadow-md transition ${toneBadgeClasses}`}
             >
               {!modelsReady ? (
                 <Loader2 className="w-4 h-4 animate-spin shrink-0" />

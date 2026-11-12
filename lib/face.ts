@@ -2,7 +2,7 @@
 
 import * as faceapi from '@vladmandic/face-api';
 import type { SubjectType } from '@/types/database';
-import type { NormalizedFaceBox } from './mediapipe';
+import { getVisiblePortraitRect, type NormalizedFaceBox } from './mediapipe';
 import {
   getCachedFaceTemplates,
   invalidateFaceTemplatesCache,
@@ -50,20 +50,21 @@ export function getFaceThreshold(): number {
 export async function ensureFaceModelsLoaded(): Promise<void> {
   if (!modelsReadyPromise) {
     modelsReadyPromise = (async () => {
+      // Gunakan tinyFaceDetector (189KB) jauh lebih ringan untuk tablet RAM 3GB dibanding ssdMobilenetv1 (5.6MB)
       await Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
+        faceapi.nets.tinyFaceDetector.loadFromUri('/models'),
         faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
         faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
       ]);
 
-      // Warm-up ringan pada canvas kecil agar inferensi pertama cepat
+      // Warm-up ringan pada canvas kecil agar shader WebGL siap sebelum scan pertama
       const warmupCanvas = document.createElement('canvas');
-      warmupCanvas.width = 160;
-      warmupCanvas.height = 160;
+      warmupCanvas.width = 128;
+      warmupCanvas.height = 128;
       try {
         await faceapi.detectSingleFace(
           warmupCanvas,
-          new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 })
+          new faceapi.TinyFaceDetectorOptions({ inputSize: 128, scoreThreshold: 0.4 })
         );
       } catch {
         // abaikan error warm-up
@@ -88,34 +89,34 @@ function getTargetCanvas(
   const vh = video.videoHeight;
 
   if (faceBox && vw > 0 && vh > 0) {
-    // Crop area wajah + padding 55% ke canvas 320x320 untuk percepat deteksi 4-6x di tablet
-    const bw = faceBox.widthRatio * vw;
-    const bh = faceBox.heightRatio * vh;
+    const rect = getVisiblePortraitRect(video);
+    const bw = faceBox.widthRatio * rect.sw;
+    const bh = faceBox.heightRatio * rect.sh;
     const side = Math.max(bw, bh) * 1.65;
-    const cx = faceBox.centerX * vw;
-    const cy = faceBox.centerY * vh;
+    const cx = rect.sx + faceBox.centerX * rect.sw;
+    const cy = rect.sy + faceBox.centerY * rect.sh;
 
     const sx = Math.max(0, cx - side / 2);
     const sy = Math.max(0, cy - side / 2);
     const sw = Math.min(vw - sx, side);
     const sh = Math.min(vh - sy, side);
 
-    canvas.width = 320;
-    canvas.height = 320;
+    canvas.width = 224;
+    canvas.height = 224;
     const ctx = canvas.getContext('2d');
     if (ctx && sw > 20 && sh > 20) {
-      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, 320, 320);
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, 224, 224);
       return canvas;
     }
   }
 
-  // Fallback: downscale frame proporsional dengan sisi maks 480px
-  const scale = Math.min(1, 480 / Math.max(vw, vh, 1));
-  canvas.width = Math.max(160, Math.round(vw * scale));
-  canvas.height = Math.max(160, Math.round(vh * scale));
+  // Fallback: downscale frame portrait ke maks 320px
+  const rect = getVisiblePortraitRect(video);
+  canvas.width = 240;
+  canvas.height = 320;
   const ctx = canvas.getContext('2d');
   if (ctx) {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, 240, 320);
   }
   return canvas;
 }
@@ -131,7 +132,7 @@ export async function extractFaceDescriptor(
   const detection = await faceapi
     .detectSingleFace(
       inputCanvas,
-      new faceapi.SsdMobilenetv1Options({ minConfidence: 0.55 })
+      new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.45 })
     )
     .withFaceLandmarks()
     .withFaceDescriptor();
@@ -214,8 +215,6 @@ export function matchDescriptor(
       return {
         ...person,
         centroidDistance: centroidDist,
-        // Kombinasi jarak minimum + centroid untuk menghindari outlier salah orang
-        score: person.minDistance * 0.7 + centroidDist * 0.3,
       };
     })
     .sort((a, b) => a.minDistance - b.minDistance);
@@ -231,7 +230,6 @@ export function matchDescriptor(
     };
   }
 
-  // Pastikan jarak ke rata-rata template orang tersebut juga konsisten dekat
   if (best.centroidDistance >= threshold + 0.045) {
     return {
       matched: false,
@@ -240,7 +238,6 @@ export function matchDescriptor(
     };
   }
 
-  // Cek margin ke kandidat terbaik kedua agar dua orang mirip tidak saling tertukar
   if (
     secondBest &&
     best.minDistance > 0.28 &&

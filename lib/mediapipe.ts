@@ -3,41 +3,71 @@
 import { FilesetResolver, FaceLandmarker, type FaceLandmarkerResult } from '@mediapipe/tasks-vision';
 
 let landmarkerPromise: Promise<FaceLandmarker> | null = null;
+let reusableMpCanvas: HTMLCanvasElement | null = null;
+let reusableQualityBuf: Float32Array | null = null;
+
+const MP_W = 192;
+const MP_H = 256;
 
 export async function getFaceLandmarker(): Promise<FaceLandmarker> {
   if (!landmarkerPromise) {
     landmarkerPromise = (async () => {
       const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-      try {
-        return await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: '/models/face_landmarker.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numFaces: 2,
-          outputFaceBlendshapes: true,
-          outputFacialTransformationMatrixes: false,
-        });
-      } catch {
-        // Fallback ke CPU pada perangkat yang tidak mendukung WebGL GPU delegate
-        return await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: '/models/face_landmarker.task',
-            delegate: 'CPU',
-          },
-          runningMode: 'VIDEO',
-          numFaces: 2,
-          outputFaceBlendshapes: true,
-          outputFacialTransformationMatrixes: false,
-        });
-      }
+      // Gunakan CPU SIMD WASM agar tidak berebut WebGL dengan video compositing & face-api pada GPU tablet (Mali/Adreno entry-level)
+      return await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: '/models/face_landmarker.task',
+          delegate: 'CPU',
+        },
+        runningMode: 'VIDEO',
+        numFaces: 2,
+        outputFaceBlendshapes: false,
+        outputFacialTransformationMatrixes: false,
+      });
     })().catch((err) => {
       landmarkerPromise = null;
       throw err;
     });
   }
   return landmarkerPromise;
+}
+
+export interface VisiblePortraitRect {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+}
+
+export function getVisiblePortraitRect(video: HTMLVideoElement): VisiblePortraitRect {
+  const vw = video.videoWidth || 480;
+  const vh = video.videoHeight || 640;
+  const targetAspect = 3 / 4;
+  const srcAspect = vw / vh;
+
+  if (srcAspect > targetAspect) {
+    const sw = vh * targetAspect;
+    const sx = (vw - sw) / 2;
+    return { sx, sy: 0, sw, sh: vh };
+  }
+  const sh = vw / targetAspect;
+  const sy = (vh - sh) / 2;
+  return { sx: 0, sy, sw: vw, sh };
+}
+
+export function capturePortraitSampleCanvas(video: HTMLVideoElement): HTMLCanvasElement | null {
+  if (!video.videoWidth || !video.videoHeight) return null;
+  if (!reusableMpCanvas) {
+    reusableMpCanvas = document.createElement('canvas');
+    reusableMpCanvas.width = MP_W;
+    reusableMpCanvas.height = MP_H;
+  }
+  const ctx = reusableMpCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  const { sx, sy, sw, sh } = getVisiblePortraitRect(video);
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, MP_W, MP_H);
+  return reusableMpCanvas;
 }
 
 export interface NormalizedFaceBox {
@@ -55,10 +85,18 @@ export interface FaceQualityAnalysis {
   faceCount: number;
   statusOk: boolean;
   message: string;
-  yaw: number; // positif = menoleh ke kiri layar (cermin), negatif = ke kanan
-  pitch: number; // relatif terhadap baseline wajah
+  yaw: number;
+  pitch: number;
   isBlinking: boolean;
   box: NormalizedFaceBox | null;
+}
+
+function landmarkDist(
+  a: { x: number; y: number } | undefined,
+  b: { x: number; y: number } | undefined
+): number {
+  if (!a || !b) return 0;
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualityAnalysis {
@@ -120,10 +158,13 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
   const midY = (forehead.y + chin.y) / 2;
   const pitch = (nose.y - midY) / faceH;
 
-  const blendshapes = result.faceBlendshapes?.[0]?.categories ?? [];
-  const blinkLeft = blendshapes.find((c) => c.categoryName === 'eyeBlinkLeft')?.score ?? 0;
-  const blinkRight = blendshapes.find((c) => c.categoryName === 'eyeBlinkRight')?.score ?? 0;
-  const isBlinking = blinkLeft > 0.34 || blinkRight > 0.34;
+  // Hitung Eye Aspect Ratio langsung dari landmark mata (tanpa beban model blendshapes)
+  const leftEyeV = landmarkDist(landmarks[159], landmarks[145]);
+  const leftEyeH = Math.max(0.005, landmarkDist(landmarks[33], landmarks[133]));
+  const rightEyeV = landmarkDist(landmarks[386], landmarks[374]);
+  const rightEyeH = Math.max(0.005, landmarkDist(landmarks[362], landmarks[263]));
+  const avgEar = (leftEyeV / leftEyeH + rightEyeV / rightEyeH) / 2;
+  const isBlinking = avgEar < 0.21;
 
   const box: NormalizedFaceBox = {
     minX,
@@ -136,7 +177,7 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
     centerY,
   };
 
-  if (widthRatio < 0.16 || heightRatio < 0.18) {
+  if (widthRatio < 0.16 || heightRatio < 0.17) {
     return {
       faceCount: 1,
       statusOk: false,
@@ -148,7 +189,7 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
     };
   }
 
-  if (widthRatio > 0.85 || heightRatio > 0.90) {
+  if (widthRatio > 0.88 || heightRatio > 0.92) {
     return {
       faceCount: 1,
       statusOk: false,
@@ -160,11 +201,11 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
     };
   }
 
-  if (centerX < 0.22 || centerX > 0.78 || centerY < 0.18 || centerY > 0.82) {
+  if (centerX < 0.20 || centerX > 0.80 || centerY < 0.16 || centerY > 0.84) {
     return {
       faceCount: 1,
       statusOk: false,
-      message: 'Posisikan wajah di tengah bingkai oval',
+      message: 'Posisikan wajah di tengah bingkai',
       yaw,
       pitch,
       isBlinking,
@@ -183,28 +224,27 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
   };
 }
 
-export function checkVideoFrameQuality(video: HTMLVideoElement): {
+export function checkCanvasQuality(canvas: HTMLCanvasElement): {
   ok: boolean;
   reason?: string;
 } {
-  if (!video.videoWidth || !video.videoHeight) {
-    return { ok: false, reason: 'Kamera belum siap' };
-  }
-
-  const w = 120;
-  const h = 160;
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return { ok: true };
 
-  ctx.drawImage(video, 0, 0, w, h);
-  const img = ctx.getImageData(0, 0, w, h).data;
+  // Sampling grid 96x128 dari tengah canvas (zero canvas allocation)
+  const w = 96;
+  const h = 128;
+  const ox = Math.max(0, Math.floor((canvas.width - w) / 2));
+  const oy = Math.max(0, Math.floor((canvas.height - h) / 2));
+  const img = ctx.getImageData(ox, oy, w, h).data;
+
+  if (!reusableQualityBuf || reusableQualityBuf.length !== w * h) {
+    reusableQualityBuf = new Float32Array(w * h);
+  }
+  const lumGrid = reusableQualityBuf;
 
   let sumLum = 0;
   let edgeEnergy = 0;
-  const lumGrid = new Float32Array(w * h);
 
   for (let i = 0; i < w * h; i++) {
     const idx = i * 4;
@@ -228,7 +268,7 @@ export function checkVideoFrameQuality(video: HTMLVideoElement): {
   if (avgBrightness < 34) {
     return { ok: false, reason: 'Pencahayaan terlalu gelap, tambah cahaya' };
   }
-  if (avgEdge < 5.0) {
+  if (avgEdge < 4.5) {
     return { ok: false, reason: 'Gambar buram, tahan posisi stabil' };
   }
   return { ok: true };
