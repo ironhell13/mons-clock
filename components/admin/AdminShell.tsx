@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  Briefcase,
   Building2,
   Car,
   ClipboardList,
@@ -15,7 +16,9 @@ import {
   Menu,
   Package,
   ScanFace,
+  Settings2,
   Shield,
+  Tag,
   Truck,
   UserCheck,
   UserCog,
@@ -52,6 +55,14 @@ const NAV_GROUPS: NavGroup[] = [
       { href: '/admin/master/area', label: 'Area', icon: MapPin },
       { href: '/admin/master/nopol', label: 'Nopol', icon: Car },
       { href: '/admin/master/bengkel', label: 'Bengkel', icon: Building2 },
+    ],
+  },
+  {
+    label: 'Setting Data Master',
+    items: [
+      { href: '/admin/master/setting', label: 'Pusat Setting Master', icon: Settings2 },
+      { href: '/admin/master/jabatan', label: 'Master Jabatan', icon: Briefcase },
+      { href: '/admin/master/vendor', label: 'Master Vendor', icon: Tag },
     ],
   },
   {

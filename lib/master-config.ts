@@ -10,7 +10,7 @@ export interface MasterFieldMeta {
 
 export interface MasterEntityMeta {
   entity: MasterEntityKey;
-  table: 'employees' | 'escorts' | 'areas' | 'vehicles' | 'workshops';
+  table: 'employees' | 'escorts' | 'areas' | 'vehicles' | 'workshops' | 'positions' | 'vendors';
   title: string;
   singular: string;
   description: string;
@@ -93,6 +93,32 @@ export const MASTER_CONFIG: Record<MasterEntityKey, MasterEntityMeta> = {
     exportFilename: 'Master_Bengkel.xlsx',
     exportHeaders: ['NAMA BENGKEL'],
     previewColumns: [{ key: 'name', label: 'Nama Bengkel' }],
+    defaultSortKey: 'name',
+    hasFaceStatus: false,
+  },
+  jabatan: {
+    entity: 'jabatan',
+    table: 'positions',
+    title: 'Master Jabatan (Karyawan)',
+    singular: 'Jabatan',
+    description: 'Kelola daftar jabatan resmi yang dipakai pada pilihan Master Karyawan.',
+    sheetName: 'Master Jabatan',
+    exportFilename: 'Master_Jabatan.xlsx',
+    exportHeaders: ['JABATAN'],
+    previewColumns: [{ key: 'name', label: 'Nama Jabatan' }],
+    defaultSortKey: 'name',
+    hasFaceStatus: false,
+  },
+  vendor: {
+    entity: 'vendor',
+    table: 'vendors',
+    title: 'Master Vendor (Pengawal)',
+    singular: 'Vendor',
+    description: 'Kelola daftar vendor resmi yang dipakai pada pilihan Master Pengawal.',
+    sheetName: 'Master Vendor',
+    exportFilename: 'Master_Vendor.xlsx',
+    exportHeaders: ['VENDOR'],
+    previewColumns: [{ key: 'name', label: 'Nama Vendor' }],
     defaultSortKey: 'name',
     hasFaceStatus: false,
   },

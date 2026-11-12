@@ -26,6 +26,7 @@ import { Modal } from '@/components/ui/Modal';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { TableSkeleton } from '@/components/ui/Skeleton';
 import { DataTablePagination } from '@/components/ui/DataTablePagination';
+import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import {
   AuditLogsModal,
   DeleteLaporanModal,
@@ -107,6 +108,16 @@ export function LaporanKaryawanClient() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const employeeOptions = useMemo(
+    () =>
+      employees.map((e) => ({
+        value: e.id,
+        label: e.name,
+        sublabel: `${e.position} • ${e.employee_no}`,
+      })),
+    [employees]
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -271,18 +282,17 @@ export function LaporanKaryawanClient() {
             />
           </div>
 
-          <select
-            value={employeeFilter}
-            onChange={(e) => setEmployeeFilter(e.target.value)}
-            className="rounded-xl border border-border-sky bg-white px-3 py-2.5 text-xs font-semibold text-ink focus:border-primary-600 focus:outline-none"
-          >
-            <option value="">Semua Karyawan</option>
-            {employees.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name}
-              </option>
-            ))}
-          </select>
+          <div className="w-full sm:w-64">
+            <AutocompleteInput
+              options={employeeOptions}
+              value={employeeFilter}
+              onChange={(val) => setEmployeeFilter(val)}
+              placeholder="Filter ketik nama karyawan..."
+              allowFreeText={false}
+              clearable
+              compact
+            />
+          </div>
 
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <Calendar className="w-4 h-4 text-ink-muted" />
@@ -404,17 +414,14 @@ export function LaporanKaryawanClient() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-sm font-semibold text-ink mb-1">Karyawan *</label>
-                <select
+                <AutocompleteInput
+                  options={employeeOptions}
                   value={corrEmployeeId}
-                  onChange={(e) => setCorrEmployeeId(e.target.value)}
-                  className="w-full rounded-xl border border-border-sky px-3 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
-                >
-                  {employees.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name} — {e.position}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setCorrEmployeeId(val)}
+                  placeholder="Ketik nama karyawan..."
+                  allowFreeText={false}
+                  clearable
+                />
               </div>
               <div>
                 <label className="block text-sm font-semibold text-ink mb-1">Tanggal Shift *</label>

@@ -23,7 +23,6 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { TableSkeleton } from '@/components/ui/Skeleton';
 import { DataTablePagination } from '@/components/ui/DataTablePagination';
-import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 
 function hhmm(val: string | null | undefined): string {
   if (!val) return '';
@@ -32,7 +31,6 @@ function hhmm(val: string | null | undefined): string {
 
 export function MutasiTamuClient() {
   const [items, setItems] = useState<GuestLog[]>([]);
-  const [plates, setPlates] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [fromDate, setFromDate] = useState('');
@@ -63,13 +61,12 @@ export function MutasiTamuClient() {
       if (fromDate) params.set('from', fromDate);
       if (toDate) params.set('to', toDate);
       const res = await fetch(`/api/mutasi/tamu?${params.toString()}`, { cache: 'no-store' });
-      const json = (await res.json()) as { items?: GuestLog[]; plates?: string[]; error?: string };
+      const json = (await res.json()) as { items?: GuestLog[]; error?: string };
       if (!res.ok) {
         toast.error(json.error ?? 'Gagal memuat data mutasi tamu.');
         return;
       }
       setItems(json.items ?? []);
-      setPlates(json.plates ?? []);
     } catch {
       toast.error('Gagal terhubung ke server.');
     } finally {
@@ -80,11 +77,6 @@ export function MutasiTamuClient() {
   useEffect(() => {
     loadData();
   }, [loadData]);
-
-  const plateOptions = useMemo(
-    () => plates.map((p) => ({ value: p, label: p })),
-    [plates]
-  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -455,14 +447,15 @@ export function MutasiTamuClient() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-semibold text-ink mb-1">Plat Kendaraan</label>
-              <AutocompleteInput
-                options={plateOptions}
+              <label className="block text-sm font-semibold text-ink mb-1">
+                Plat Kendaraan (Bebas / Pribadi)
+              </label>
+              <input
+                type="text"
                 value={vehiclePlate}
-                onChange={(val) => setVehiclePlate(val)}
-                placeholder="Contoh: B 1234 ABC"
-                allowFreeText
-                uppercase
+                onChange={(e) => setVehiclePlate(e.target.value.toUpperCase())}
+                placeholder="Contoh: B 1234 ABC (opsional)"
+                className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm uppercase font-bold tracking-wide focus:border-primary-600 focus:outline-none"
               />
             </div>
             <div>

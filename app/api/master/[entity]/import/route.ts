@@ -75,7 +75,7 @@ export async function POST(
     }
     upsertRows = Array.from(map.values());
     onConflict = 'plate';
-  } else if (entity === 'bengkel') {
+  } else if (entity === 'bengkel' || entity === 'jabatan' || entity === 'vendor') {
     const map = new Map<string, Record<string, unknown>>();
     for (const r of rawRows) {
       const name = cleanText(r.name ?? '');

@@ -88,6 +88,13 @@ async function main() {
       .from('employees')
       .upsert(employees, { onConflict: 'employee_no' });
     if (empErr) throw empErr;
+
+    const uniquePositions = Array.from(
+      new Set(employees.map((e) => e.position).filter((p) => p && p !== '-'))
+    ).map((name) => ({ name, is_active: true }));
+    if (uniquePositions.length > 0) {
+      await supabase.from('positions').upsert(uniquePositions, { onConflict: 'name' });
+    }
   }
   console.log(`Master Karyawan: ${employees.length} baris siap/di-upsert.`);
 
@@ -114,6 +121,13 @@ async function main() {
       .from('escorts')
       .upsert(escorts, { onConflict: 'name,vendor' });
     if (escErr) throw escErr;
+
+    const uniqueVendors = Array.from(
+      new Set(escorts.map((e) => e.vendor).filter(Boolean))
+    ).map((name) => ({ name, is_active: true }));
+    if (uniqueVendors.length > 0) {
+      await supabase.from('vendors').upsert(uniqueVendors, { onConflict: 'name' });
+    }
   }
   console.log(`Master Pengawal: ${escorts.length} baris siap/di-upsert.`);
 

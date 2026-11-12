@@ -23,7 +23,9 @@ import {
   employeeSchema,
   escortSchema,
   normalizePlate,
+  positionSchema,
   vehicleSchema,
+  vendorSchema,
   workshopSchema,
 } from '@/lib/validators';
 import { Modal } from '@/components/ui/Modal';
@@ -50,6 +52,7 @@ interface MasterRecord {
 export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
   const meta = MASTER_CONFIG[entity];
   const [items, setItems] = useState<MasterRecord[]>([]);
+  const [masterChoices, setMasterChoices] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -79,12 +82,17 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
     setLoading(true);
     try {
       const res = await fetch(`/api/master/${entity}`, { cache: 'no-store' });
-      const json = (await res.json()) as { items?: MasterRecord[]; error?: string };
+      const json = (await res.json()) as {
+        items?: MasterRecord[];
+        masterChoices?: string[];
+        error?: string;
+      };
       if (!res.ok) {
         toast.error(json.error ?? 'Gagal memuat data master.');
         return;
       }
       setItems(json.items ?? []);
+      setMasterChoices(json.masterChoices ?? []);
     } catch {
       toast.error('Gagal terhubung ke server.');
     } finally {
@@ -99,10 +107,24 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
   const existingVendors = useMemo(() => {
     if (entity !== 'pengawal') return [];
     const unique = Array.from(
-      new Set(items.map((i) => i.vendor).filter((v): v is string => Boolean(v)))
+      new Set([
+        ...masterChoices,
+        ...items.map((i) => i.vendor).filter((v): v is string => Boolean(v)),
+      ])
     ).sort((a, b) => a.localeCompare(b));
     return unique.map((v) => ({ value: v, label: v }));
-  }, [entity, items]);
+  }, [entity, items, masterChoices]);
+
+  const existingPositions = useMemo(() => {
+    if (entity !== 'karyawan') return [];
+    const unique = Array.from(
+      new Set([
+        ...masterChoices,
+        ...items.map((i) => i.position).filter((v): v is string => Boolean(v && v !== '-')),
+      ])
+    ).sort((a, b) => a.localeCompare(b));
+    return unique.map((p) => ({ value: p, label: p }));
+  }, [entity, items, masterChoices]);
 
   const filteredAndSorted = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -223,6 +245,26 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
         return;
       }
       payload = parsed.data;
+    } else if (entity === 'jabatan') {
+      const parsed = positionSchema.safeParse({
+        name: cleanText(nameVal),
+        is_active: editingItem?.is_active ?? true,
+      });
+      if (!parsed.success) {
+        setFormError(parsed.error.errors[0]?.message ?? 'Input tidak valid.');
+        return;
+      }
+      payload = parsed.data;
+    } else if (entity === 'vendor') {
+      const parsed = vendorSchema.safeParse({
+        name: cleanText(nameVal),
+        is_active: editingItem?.is_active ?? true,
+      });
+      if (!parsed.success) {
+        setFormError(parsed.error.errors[0]?.message ?? 'Input tidak valid.');
+        return;
+      }
+      payload = parsed.data;
     }
 
     setSaving(true);
@@ -314,6 +356,12 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
       if (entity === 'nopol') {
         return { NOPOL: item.plate ?? '' };
       }
+      if (entity === 'jabatan') {
+        return { JABATAN: item.name ?? '' };
+      }
+      if (entity === 'vendor') {
+        return { VENDOR: item.name ?? '' };
+      }
       return { 'NAMA BENGKEL': item.name ?? '' };
     });
 
@@ -341,6 +389,30 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          {entity === 'karyawan' && (
+            <Link
+              href="/admin/master/jabatan"
+              className="inline-flex items-center gap-2 rounded-xl border border-primary-200 bg-primary-50 hover:bg-primary-100 px-3.5 py-2.5 text-sm font-semibold text-primary-700 transition"
+            >
+              <span>Atur Master Jabatan</span>
+            </Link>
+          )}
+          {entity === 'pengawal' && (
+            <Link
+              href="/admin/master/vendor"
+              className="inline-flex items-center gap-2 rounded-xl border border-primary-200 bg-primary-50 hover:bg-primary-100 px-3.5 py-2.5 text-sm font-semibold text-primary-700 transition"
+            >
+              <span>Atur Master Vendor</span>
+            </Link>
+          )}
+          {(entity === 'jabatan' || entity === 'vendor') && (
+            <Link
+              href="/admin/master/setting"
+              className="inline-flex items-center gap-2 rounded-xl border border-border-sky bg-white hover:bg-page px-3.5 py-2.5 text-sm font-semibold text-ink transition"
+            >
+              <span>Setting Data Master</span>
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => setImportOpen(true)}
@@ -437,6 +509,12 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
                   {entity === 'bengkel' && (
                     <th className="px-4 py-3">{renderSortButton('name', 'Nama Bengkel')}</th>
                   )}
+                  {entity === 'jabatan' && (
+                    <th className="px-4 py-3">{renderSortButton('name', 'Nama Jabatan')}</th>
+                  )}
+                  {entity === 'vendor' && (
+                    <th className="px-4 py-3">{renderSortButton('name', 'Nama Vendor')}</th>
+                  )}
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3 text-right">Aksi</th>
                 </tr>
@@ -502,7 +580,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
                     {entity === 'nopol' && (
                       <td className="px-4 py-3 font-bold text-ink tracking-wide">{item.plate}</td>
                     )}
-                    {entity === 'bengkel' && (
+                    {(entity === 'bengkel' || entity === 'jabatan' || entity === 'vendor') && (
                       <td className="px-4 py-3 font-semibold text-ink">{item.name}</td>
                     )}
 
@@ -612,13 +690,21 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-ink mb-1">Jabatan *</label>
-                <input
-                  type="text"
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-semibold text-ink">Jabatan *</label>
+                  <Link
+                    href="/admin/master/jabatan"
+                    className="text-xs font-semibold text-primary-700 hover:underline"
+                  >
+                    Kelola Master Jabatan
+                  </Link>
+                </div>
+                <AutocompleteInput
+                  options={existingPositions}
                   value={positionVal}
-                  onChange={(e) => setPositionVal(e.target.value)}
-                  placeholder="Contoh: Kepala Team ATM"
-                  className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
+                  onChange={(val) => setPositionVal(val)}
+                  placeholder="Ketik & pilih jabatan (atau isi baru)"
+                  allowFreeText
                 />
               </div>
             </>
@@ -637,12 +723,20 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-ink mb-1">Vendor *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-semibold text-ink">Vendor *</label>
+                  <Link
+                    href="/admin/master/vendor"
+                    className="text-xs font-semibold text-primary-700 hover:underline"
+                  >
+                    Kelola Master Vendor
+                  </Link>
+                </div>
                 <AutocompleteInput
                   options={existingVendors}
                   value={vendorVal}
                   onChange={(val) => setVendorVal(val)}
-                  placeholder="Pilih vendor atau ketik vendor baru"
+                  placeholder="Ketik & pilih vendor (atau isi baru)"
                   allowFreeText
                 />
               </div>
@@ -675,14 +769,22 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
             </div>
           )}
 
-          {entity === 'bengkel' && (
+          {(entity === 'bengkel' || entity === 'jabatan' || entity === 'vendor') && (
             <div>
-              <label className="block text-sm font-semibold text-ink mb-1">Nama Bengkel *</label>
+              <label className="block text-sm font-semibold text-ink mb-1">
+                Nama {meta.singular} *
+              </label>
               <input
                 type="text"
                 value={nameVal}
                 onChange={(e) => setNameVal(e.target.value)}
-                placeholder="Contoh: Tata Jaya Motor"
+                placeholder={
+                  entity === 'jabatan'
+                    ? 'Contoh: Kepala Team ATM'
+                    : entity === 'vendor'
+                      ? 'Contoh: POLDA'
+                      : 'Contoh: Tata Jaya Motor'
+                }
                 className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
               />
             </div>

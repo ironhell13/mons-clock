@@ -48,6 +48,16 @@ export const workshopSchema = z.object({
   is_active: z.boolean().optional().default(true),
 });
 
+export const positionSchema = z.object({
+  name: z.string().trim().min(2, 'Nama jabatan minimal 2 karakter.'),
+  is_active: z.boolean().optional().default(true),
+});
+
+export const vendorSchema = z.object({
+  name: z.string().trim().min(2, 'Nama vendor minimal 2 karakter.'),
+  is_active: z.boolean().optional().default(true),
+});
+
 export const guestLogSchema = z.object({
   log_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Tanggal wajib diisi.'),
   time_in: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, 'Jam masuk wajib diisi.'),
@@ -155,7 +165,7 @@ export const tripDepartSchema = z
     plate: z
       .string()
       .transform((v) => normalizePlate(v))
-      .refine((v) => v.length >= 3, 'Nomor polisi wajib diisi.'),
+      .refine((v) => v.length >= 2, 'Nomor polisi wajib diisi.'),
     km_start: z.coerce.number().int().min(0, 'KM awal minimal 0.'),
     area_id: z.string().uuid('Area wajib dipilih dari master.').optional().nullable(),
     run_code: z.string().trim().optional().nullable(),

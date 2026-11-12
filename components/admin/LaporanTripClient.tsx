@@ -56,7 +56,7 @@ interface TripReportRow {
 export function LaporanTripClient({ tripType }: { tripType: TripType }) {
   const kind = tripType.toLowerCase();
   const [items, setItems] = useState<TripReportRow[]>([]);
-  const [employees, setEmployees] = useState<{ id: string; name: string }[]>([]);
+  const [employees, setEmployees] = useState<{ id: string; name: string; position?: string }[]>([]);
   const [escorts, setEscorts] = useState<{ id: string; name: string; vendor: string }[]>([]);
   const [plates, setPlates] = useState<string[]>([]);
   const [areas, setAreas] = useState<{ id: string; name: string }[]>([]);
@@ -100,7 +100,7 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
       const res = await fetch(`/api/laporan?${params.toString()}`, { cache: 'no-store' });
       const json = (await res.json()) as {
         items?: TripReportRow[];
-        employees?: { id: string; name: string }[];
+        employees?: { id: string; name: string; position?: string }[];
         escorts?: { id: string; name: string; vendor: string }[];
         plates?: string[];
         areas?: { id: string; name: string }[];
@@ -127,6 +127,50 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const employeeOptions = useMemo(
+    () =>
+      employees.map((e) => ({
+        value: e.id,
+        label: e.name,
+        sublabel: e.position,
+      })),
+    [employees]
+  );
+
+  const staff2Options = useMemo(
+    () =>
+      employees
+        .filter((e) => e.id !== editing?.staff1_id)
+        .map((e) => ({
+          value: e.id,
+          label: e.name,
+          sublabel: e.position,
+        })),
+    [employees, editing?.staff1_id]
+  );
+
+  const escortOptions = useMemo(
+    () =>
+      escorts.map((e) => ({
+        value: e.id,
+        label: e.name,
+        sublabel: e.vendor,
+      })),
+    [escorts]
+  );
+
+  const areaOptions = useMemo(
+    () => areas.map((a) => ({ value: a.id, label: a.name })),
+    [areas]
+  );
+
+  const plateFilterOptions = useMemo(() => {
+    const merged = Array.from(
+      new Set([...plates, ...items.map((i) => i.plate).filter(Boolean)])
+    ).sort((a, b) => a.localeCompare(b));
+    return merged.map((p) => ({ value: p, label: p }));
+  }, [plates, items]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -293,31 +337,30 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
             />
           </div>
 
-          <select
-            value={employeeFilter}
-            onChange={(e) => setEmployeeFilter(e.target.value)}
-            className="rounded-xl border border-border-sky bg-white px-3 py-2.5 text-xs font-semibold text-ink focus:border-primary-600 focus:outline-none"
-          >
-            <option value="">Semua Karyawan</option>
-            {employees.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name}
-              </option>
-            ))}
-          </select>
+          <div className="w-full sm:w-56">
+            <AutocompleteInput
+              options={employeeOptions}
+              value={employeeFilter}
+              onChange={(val) => setEmployeeFilter(val)}
+              placeholder="Filter ketik karyawan..."
+              allowFreeText={false}
+              clearable
+              compact
+            />
+          </div>
 
-          <select
-            value={plateFilter}
-            onChange={(e) => setPlateFilter(e.target.value)}
-            className="rounded-xl border border-border-sky bg-white px-3 py-2.5 text-xs font-semibold text-ink focus:border-primary-600 focus:outline-none"
-          >
-            <option value="">Semua Nopol</option>
-            {plates.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+          <div className="w-full sm:w-44">
+            <AutocompleteInput
+              options={plateFilterOptions}
+              value={plateFilter}
+              onChange={(val) => setPlateFilter(val)}
+              placeholder="Filter ketik nopol..."
+              allowFreeText
+              uppercase
+              clearable
+              compact
+            />
+          </div>
 
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <Calendar className="w-4 h-4 text-ink-muted" />
@@ -479,48 +522,48 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-semibold text-ink mb-1">Staff 2</label>
-              <select
+              <AutocompleteInput
+                options={staff2Options}
                 value={corrStaff2}
-                onChange={(e) => setCorrStaff2(e.target.value)}
-                className="w-full rounded-xl border border-border-sky px-3 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
-              >
-                <option value="">-- Tidak ada --</option>
-                {employees
-                  .filter((e) => e.id !== editing?.staff1_id)
-                  .map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name}
-                    </option>
-                  ))}
-              </select>
+                onChange={(val) => setCorrStaff2(val)}
+                placeholder="Ketik nama Staff 2 (opsional)..."
+                allowFreeText={false}
+                clearable
+              />
             </div>
             <div>
               <label className="block text-sm font-semibold text-ink mb-1">Pengawal</label>
-              <select
+              <AutocompleteInput
+                options={escortOptions}
                 value={corrEscort}
-                onChange={(e) => setCorrEscort(e.target.value)}
-                className="w-full rounded-xl border border-border-sky px-3 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
-              >
-                <option value="">-- Tidak ada --</option>
-                {escorts.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name} ({e.vendor})
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setCorrEscort(val)}
+                placeholder="Ketik nama pengawal / vendor..."
+                allowFreeText={false}
+                clearable
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-sm font-semibold text-ink mb-1">Nopol</label>
-              <AutocompleteInput
-                options={plates.map((p) => ({ value: p, label: p }))}
-                value={corrPlate}
-                onChange={(v) => setCorrPlate(v)}
-                allowFreeText
-                uppercase
-              />
+              {tripType === 'FLM' ? (
+                <input
+                  type="text"
+                  value={corrPlate}
+                  onChange={(e) => setCorrPlate(e.target.value.toUpperCase())}
+                  placeholder="Ketik nopol pribadi"
+                  className="w-full rounded-xl border border-border-sky px-3 py-2.5 text-sm uppercase font-bold focus:border-primary-600 focus:outline-none"
+                />
+              ) : (
+                <AutocompleteInput
+                  options={plates.map((p) => ({ value: p, label: p }))}
+                  value={corrPlate}
+                  onChange={(v) => setCorrPlate(v)}
+                  allowFreeText
+                  uppercase
+                />
+              )}
             </div>
             <div>
               <label className="block text-sm font-semibold text-ink mb-1">KM Awal</label>
@@ -547,17 +590,14 @@ export function LaporanTripClient({ tripType }: { tripType: TripType }) {
           {tripType === 'FLM' ? (
             <div>
               <label className="block text-sm font-semibold text-ink mb-1">Area</label>
-              <select
+              <AutocompleteInput
+                options={areaOptions}
                 value={corrAreaId}
-                onChange={(e) => setCorrAreaId(e.target.value)}
-                className="w-full rounded-xl border border-border-sky px-3 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
-              >
-                {areas.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setCorrAreaId(val)}
+                placeholder="Ketik nama area..."
+                allowFreeText={false}
+                clearable={false}
+              />
             </div>
           ) : (
             <div>

@@ -59,6 +59,20 @@ export interface Workshop {
   created_at: string;
 }
 
+export interface Position {
+  id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface Vendor {
+  id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+}
+
 export interface FaceTemplate {
   id: string;
   subject_type: SubjectType;

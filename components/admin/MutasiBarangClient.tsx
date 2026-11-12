@@ -24,7 +24,6 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { TableSkeleton } from '@/components/ui/Skeleton';
 import { DataTablePagination } from '@/components/ui/DataTablePagination';
-import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 
 function hhmm(val: string | null | undefined): string {
   if (!val) return '';
@@ -33,7 +32,6 @@ function hhmm(val: string | null | undefined): string {
 
 export function MutasiBarangClient() {
   const [items, setItems] = useState<GoodsLog[]>([]);
-  const [plates, setPlates] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [fromDate, setFromDate] = useState('');
@@ -69,13 +67,12 @@ export function MutasiBarangClient() {
       if (fromDate) params.set('from', fromDate);
       if (toDate) params.set('to', toDate);
       const res = await fetch(`/api/mutasi/barang?${params.toString()}`, { cache: 'no-store' });
-      const json = (await res.json()) as { items?: GoodsLog[]; plates?: string[]; error?: string };
+      const json = (await res.json()) as { items?: GoodsLog[]; error?: string };
       if (!res.ok) {
         toast.error(json.error ?? 'Gagal memuat data mutasi barang.');
         return;
       }
       setItems(json.items ?? []);
-      setPlates(json.plates ?? []);
     } catch {
       toast.error('Gagal terhubung ke server.');
     } finally {
@@ -86,8 +83,6 @@ export function MutasiBarangClient() {
   useEffect(() => {
     loadData();
   }, [loadData]);
-
-  const plateOptions = useMemo(() => plates.map((p) => ({ value: p, label: p })), [plates]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -518,14 +513,15 @@ export function MutasiBarangClient() {
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold text-ink mb-1">Nopol</label>
-              <AutocompleteInput
-                options={plateOptions}
+              <label className="block text-sm font-semibold text-ink mb-1">
+                Nopol (Bebas / Pribadi)
+              </label>
+              <input
+                type="text"
                 value={vehiclePlate}
-                onChange={(val) => setVehiclePlate(val)}
-                placeholder="Opsional (saran master)"
-                allowFreeText
-                uppercase
+                onChange={(e) => setVehiclePlate(e.target.value.toUpperCase())}
+                placeholder="Opsional (contoh: B 1234 XYZ)"
+                className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm uppercase font-bold tracking-wide focus:border-primary-600 focus:outline-none"
               />
             </div>
           </div>

@@ -456,16 +456,27 @@ export default function AbsenTripPage({
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-bold text-ink mb-1.5">Nomor Polisi (NOPOL) *</label>
-              <AutocompleteInput
-                options={plateOptions}
-                value={plate}
-                onChange={(val) => setPlate(val)}
-                placeholder="Contoh: B 1549 SZV"
-                allowFreeText
-                uppercase
-                badgeForFreeText="Nopol tidak ada di master"
-              />
+              <label className="block text-sm font-bold text-ink mb-1.5">
+                Nomor Polisi (NOPOL) *
+              </label>
+              {tripType === 'FLM' ? (
+                <input
+                  type="text"
+                  value={plate}
+                  onChange={(e) => setPlate(e.target.value.toUpperCase())}
+                  placeholder="Ketik nopol kendaraan pribadi"
+                  className="w-full rounded-xl border border-border-sky bg-white px-4 py-3 text-sm font-bold uppercase tracking-wide text-ink focus:border-primary-600 focus:outline-none focus:ring-2 focus:ring-primary/25"
+                />
+              ) : (
+                <AutocompleteInput
+                  options={plateOptions}
+                  value={plate}
+                  onChange={(val) => setPlate(val)}
+                  placeholder="Contoh: B 1549 SZV"
+                  allowFreeText
+                  uppercase
+                />
+              )}
             </div>
 
             <div>

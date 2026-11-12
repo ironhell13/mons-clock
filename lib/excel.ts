@@ -1,7 +1,14 @@
 import * as XLSX from 'xlsx';
 import { cleanText, normalizePlate } from './validators';
 
-export type MasterEntityKey = 'karyawan' | 'pengawal' | 'area' | 'nopol' | 'bengkel';
+export type MasterEntityKey =
+  | 'karyawan'
+  | 'pengawal'
+  | 'area'
+  | 'nopol'
+  | 'bengkel'
+  | 'jabatan'
+  | 'vendor';
 
 export interface ParsedMasterPreview {
   sheetUsed: string;
@@ -40,6 +47,8 @@ const TARGET_SHEET_NAMES: Record<MasterEntityKey, string> = {
   area: 'Master Area',
   nopol: 'Master Nopol',
   bengkel: 'Master Bengkel',
+  jabatan: 'Master Jabatan',
+  vendor: 'Master Vendor',
 };
 
 export async function parseMasterExcelFile(
@@ -156,6 +165,48 @@ export async function parseMasterExcelFile(
       } else {
         map.set(plate, { plate });
       }
+    }
+    return {
+      sheetUsed: matchedSheet,
+      totalRawRows: rawRows.length,
+      duplicatesRemoved,
+      invalidRows,
+      rows: Array.from(map.values()),
+    };
+  }
+
+  if (entity === 'jabatan') {
+    const map = new Map<string, Record<string, string>>();
+    for (const r of rawRows) {
+      const name = cleanText(String(r['JABATAN'] ?? r['NAMA JABATAN'] ?? r['POSITION'] ?? r['NAME'] ?? ''));
+      if (!name) {
+        invalidRows++;
+        continue;
+      }
+      const key = name.toLowerCase();
+      if (map.has(key)) duplicatesRemoved++;
+      else map.set(key, { name });
+    }
+    return {
+      sheetUsed: matchedSheet,
+      totalRawRows: rawRows.length,
+      duplicatesRemoved,
+      invalidRows,
+      rows: Array.from(map.values()),
+    };
+  }
+
+  if (entity === 'vendor') {
+    const map = new Map<string, Record<string, string>>();
+    for (const r of rawRows) {
+      const name = cleanText(String(r['VENDOR'] ?? r['NAMA VENDOR'] ?? r['NAME'] ?? ''));
+      if (!name) {
+        invalidRows++;
+        continue;
+      }
+      const key = name.toLowerCase();
+      if (map.has(key)) duplicatesRemoved++;
+      else map.set(key, { name });
     }
     return {
       sheetUsed: matchedSheet,

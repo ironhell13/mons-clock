@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Search } from 'lucide-react';
+import { Check, ChevronDown, Search, X } from 'lucide-react';
 
 export interface AutocompleteOption {
   value: string;
@@ -20,6 +20,8 @@ interface AutocompleteInputProps {
   className?: string;
   inputId?: string;
   badgeForFreeText?: string;
+  clearable?: boolean;
+  compact?: boolean;
 }
 
 export function AutocompleteInput({
@@ -33,28 +35,44 @@ export function AutocompleteInput({
   className = '',
   inputId,
   badgeForFreeText,
+  clearable = true,
+  compact = false,
 }: AutocompleteInputProps) {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(value);
+
+  const resolvedLabel = useMemo(() => {
+    if (!value) return '';
+    const match = options.find((opt) => opt.value === value);
+    return match ? match.label : value;
+  }, [options, value]);
+
+  const [query, setQuery] = useState(resolvedLabel);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setQuery(value);
-  }, [value]);
+    setQuery(resolvedLabel);
+  }, [resolvedLabel]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setOpen(false);
+        if (!allowFreeText) {
+          setQuery(resolvedLabel);
+        }
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  }, [allowFreeText, resolvedLabel]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return options.slice(0, 60);
+    if (!q || (!open && query === resolvedLabel)) return options.slice(0, 60);
+    // Jika query persis sama dengan item yang baru dipilih, tampilkan semua agar mudah ganti
+    if (options.some((o) => o.label.toLowerCase() === q && o.value === value)) {
+      return options.slice(0, 60);
+    }
     return options
       .filter(
         (opt) =>
@@ -63,7 +81,7 @@ export function AutocompleteInput({
           (opt.sublabel && opt.sublabel.toLowerCase().includes(q))
       )
       .slice(0, 60);
-  }, [options, query]);
+  }, [options, query, open, resolvedLabel, value]);
 
   const exactMatchExists = useMemo(() => {
     const norm = query.trim().toLowerCase();
@@ -91,10 +109,16 @@ export function AutocompleteInput({
     }
   };
 
+  const handleClear = () => {
+    setQuery('');
+    onChange('');
+    setOpen(false);
+  };
+
   return (
     <div ref={containerRef} className={`relative ${className}`}>
       <div className="relative">
-        <Search className="w-4 h-4 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <Search className="w-4 h-4 text-ink-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
         <input
           id={inputId}
           type="text"
@@ -104,18 +128,35 @@ export function AutocompleteInput({
           onChange={(e) => handleInputChange(e.target.value)}
           placeholder={placeholder}
           autoComplete="off"
-          className="w-full rounded-xl border border-border-sky bg-white pl-10 pr-10 py-3 text-sm text-ink placeholder:text-ink-muted/60 focus:border-primary-600 focus:outline-none focus:ring-2 focus:ring-primary/25 disabled:bg-page/70 transition"
+          className={`w-full rounded-xl border border-border-sky bg-white pl-9 ${
+            clearable && query ? 'pr-14' : 'pr-9'
+          } ${
+            compact ? 'py-2 text-xs' : 'py-3 text-sm'
+          } text-ink placeholder:text-ink-muted/60 focus:border-primary-600 focus:outline-none focus:ring-2 focus:ring-primary/25 disabled:bg-page/70 transition`}
         />
-        <button
-          type="button"
-          tabIndex={-1}
-          disabled={disabled}
-          onClick={() => setOpen((p) => !p)}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-ink-muted hover:text-ink"
-          aria-label="Toggle daftar pilihan"
-        >
-          <ChevronDown className="w-4 h-4" />
-        </button>
+        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+          {clearable && query && !disabled && (
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={handleClear}
+              className="p-1 rounded-md text-ink-muted hover:text-danger hover:bg-danger/10 transition"
+              aria-label="Hapus pilihan"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button
+            type="button"
+            tabIndex={-1}
+            disabled={disabled}
+            onClick={() => setOpen((p) => !p)}
+            className="p-1 text-ink-muted hover:text-ink"
+            aria-label="Toggle daftar pilihan"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {allowFreeText && badgeForFreeText && query.trim().length > 0 && !exactMatchExists && (
@@ -125,12 +166,12 @@ export function AutocompleteInput({
       )}
 
       {open && !disabled && (
-        <div className="absolute z-40 mt-1.5 w-full max-h-60 overflow-y-auto rounded-xl border border-border-sky bg-white shadow-card py-1">
+        <div className="absolute z-50 mt-1.5 w-full min-w-[220px] max-h-60 overflow-y-auto rounded-xl border border-border-sky bg-white shadow-card py-1">
           {filtered.length === 0 ? (
             <div className="px-4 py-3 text-xs text-ink-muted">
               {allowFreeText
                 ? 'Tidak ada di master, teks yang diketik tetap dapat digunakan.'
-                : 'Data tidak ditemukan di master.'}
+                : 'Data tidak ditemukan.'}
             </div>
           ) : (
             filtered.map((opt) => {
@@ -139,19 +180,21 @@ export function AutocompleteInput({
                 <button
                   key={`${opt.value}-${opt.label}`}
                   type="button"
-                  onClick={() => {
+                  onMouseDown={(e) => {
+                    // Tangani di onMouseDown sebelum onBlur/outside click terjadi
+                    e.preventDefault();
                     setQuery(opt.label);
                     onChange(opt.value, opt);
                     setOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-2.5 text-sm flex items-center justify-between gap-2 hover:bg-page transition ${
+                  className={`w-full text-left px-3.5 py-2 text-sm flex items-center justify-between gap-2 hover:bg-page transition ${
                     selected ? 'bg-primary-50 font-semibold text-primary-700' : 'text-ink'
                   }`}
                 >
-                  <div>
-                    <div>{opt.label}</div>
+                  <div className="min-w-0">
+                    <div className="truncate">{opt.label}</div>
                     {opt.sublabel && (
-                      <div className="text-xs text-ink-muted font-normal">{opt.sublabel}</div>
+                      <div className="text-xs text-ink-muted font-normal truncate">{opt.sublabel}</div>
                     )}
                   </div>
                   {selected && <Check className="w-4 h-4 text-primary-600 shrink-0" />}
@@ -164,4 +207,3 @@ export function AutocompleteInput({
     </div>
   );
 }
-
