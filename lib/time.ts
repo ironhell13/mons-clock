@@ -62,6 +62,16 @@ export function formatDurationHHMM(minutes: number | null | undefined): string {
   return `${String(hrs).padStart(2, '0')}-${String(mins).padStart(2, '0')}`;
 }
 
+export function formatMinutesHuman(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || Number.isNaN(minutes)) return '-';
+  const safe = Math.max(0, Math.round(minutes));
+  const hrs = Math.floor(safe / 60);
+  const mins = safe % 60;
+  if (hrs > 0 && mins > 0) return `${hrs} jam ${mins} mnt`;
+  if (hrs > 0) return `${hrs} jam`;
+  return `${mins} mnt`;
+}
+
 export function formatWibDateOnlyLabel(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
   // Parse YYYY-MM-DD safely as midnight WIB

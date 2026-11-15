@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
         work_date,
         masuk_at,
         istirahat_at,
+        istirahat_kembali_at,
         pulang_at,
         created_at,
         employee:employees(id, name, position, employee_no)
@@ -192,7 +193,17 @@ export async function PATCH(req: NextRequest) {
     const workDate = typeof body.work_date === 'string' ? body.work_date : '';
     const masukIso = fromWibDatetimeLocal(body.masuk_local as string | null);
     const istirahatIso = fromWibDatetimeLocal(body.istirahat_local as string | null);
+    const istirahatKembaliIso = fromWibDatetimeLocal(body.istirahat_kembali_local as string | null);
     const pulangIso = fromWibDatetimeLocal(body.pulang_local as string | null);
+
+    if (istirahatIso && istirahatKembaliIso) {
+      if (new Date(istirahatKembaliIso) < new Date(istirahatIso)) {
+        return NextResponse.json(
+          { error: 'Jam kembali istirahat tidak boleh lebih awal dari jam mulai istirahat.' },
+          { status: 400 }
+        );
+      }
+    }
 
     if (id === 'NEW') {
       if (!employeeId || !workDate) {
@@ -207,6 +218,7 @@ export async function PATCH(req: NextRequest) {
             work_date: effectiveDate,
             masuk_at: masukIso,
             istirahat_at: istirahatIso,
+            istirahat_kembali_at: istirahatKembaliIso,
             pulang_at: pulangIso,
           },
           { onConflict: 'employee_id,work_date' }
@@ -245,6 +257,7 @@ export async function PATCH(req: NextRequest) {
       .update({
         masuk_at: masukIso,
         istirahat_at: istirahatIso,
+        istirahat_kembali_at: istirahatKembaliIso,
         pulang_at: pulangIso,
       })
       .eq('id', id)

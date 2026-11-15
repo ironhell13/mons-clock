@@ -3,6 +3,7 @@ import { requireApiRole } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { attendanceScanSchema } from '@/lib/validators';
 import {
+  formatMinutesHuman,
   formatWibDateFull,
   formatWibTimeSeconds,
   formatWibTimeShort,
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
           .maybeSingle()
       : adminClient
           .from('attendance')
-          .select('id, masuk_at, istirahat_at, pulang_at')
+          .select('id, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
           .eq('employee_id', employee_id)
           .not('masuk_at', 'is', null)
           .is('pulang_at', null)
@@ -119,11 +120,12 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  if (mode === 'istirahat') {
+  if (mode === 'istirahat' || mode === 'istirahat_kembali') {
     const activeShift = attendanceLookup.data as {
       id: string;
       masuk_at: string | null;
       istirahat_at: string | null;
+      istirahat_kembali_at: string | null;
       pulang_at: string | null;
     } | null;
 
@@ -137,44 +139,107 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (activeShift.istirahat_at) {
-      return NextResponse.json(
-        {
-          duplicate: true,
-          error: `Sudah absen istirahat pukul ${formatWibTimeShort(activeShift.istirahat_at)} WIB`,
-          employeeName: employee.name,
-        },
-        { status: 409 }
-      );
-    }
+    // 1. Belum absen istirahat sama sekali -> Catat MULAI ISTIRAHAT
+    if (!activeShift.istirahat_at) {
+      const { error: updateErr } = await adminClient
+        .from('attendance')
+        .update({ istirahat_at: nowIso })
+        .eq('id', activeShift.id);
 
-    const { error: updateErr } = await adminClient
-      .from('attendance')
-      .update({ istirahat_at: nowIso })
-      .eq('id', activeShift.id);
+      if (updateErr) {
+        return NextResponse.json({ error: updateErr.message }, { status: 500 });
+      }
 
-    if (updateErr) {
-      return NextResponse.json({ error: updateErr.message }, { status: 500 });
-    }
-
-    after(async () => {
-      await adminClient.from('attendance_events').insert({
-        employee_id,
-        attendance_id: activeShift.id,
-        event_type: 'istirahat',
-        occurred_at: nowIso,
-        match_distance,
+      after(async () => {
+        await adminClient.from('attendance_events').insert({
+          employee_id,
+          attendance_id: activeShift.id,
+          event_type: 'istirahat',
+          occurred_at: nowIso,
+          match_distance,
+        });
       });
-    });
 
-    return NextResponse.json({
-      success: true,
-      mode,
-      employee: { id: employee.id, name: employee.name, position: employee.position },
-      occurredAt: nowIso,
-      formattedDate: formatWibDateFull(now),
-      formattedTime: formatWibTimeSeconds(now),
-    });
+      return NextResponse.json({
+        success: true,
+        mode,
+        action: 'mulai',
+        title: 'Mulai Istirahat Berhasil',
+        statusMessage: 'Selamat beristirahat',
+        employee: { id: employee.id, name: employee.name, position: employee.position },
+        occurredAt: nowIso,
+        formattedDate: formatWibDateFull(now),
+        formattedTime: formatWibTimeSeconds(now),
+      });
+    }
+
+    // 2. Sudah mulai istirahat tapi belum kembali -> Catat KEMBALI DARI ISTIRAHAT
+    if (activeShift.istirahat_at && !activeShift.istirahat_kembali_at) {
+      // Cek proteksi double scan (kurang dari 60 detik)
+      const startMillis = new Date(activeShift.istirahat_at).getTime();
+      const diffSeconds = Math.floor((now.getTime() - startMillis) / 1000);
+      if (diffSeconds < 60) {
+        return NextResponse.json(
+          {
+            duplicate: true,
+            error: `Baru saja absen Mulai Istirahat pukul ${formatWibTimeShort(activeShift.istirahat_at)} WIB. Mohon tunggu minimal 1 menit sebelum absen kembali.`,
+            employeeName: employee.name,
+          },
+          { status: 409 }
+        );
+      }
+
+      const diffMinutes = Math.max(1, Math.round((now.getTime() - startMillis) / (60 * 1000)));
+      const durationLabel = formatMinutesHuman(diffMinutes);
+
+      const { error: updateErr } = await adminClient
+        .from('attendance')
+        .update({ istirahat_kembali_at: nowIso })
+        .eq('id', activeShift.id);
+
+      if (updateErr) {
+        return NextResponse.json({ error: updateErr.message }, { status: 500 });
+      }
+
+      after(async () => {
+        await adminClient.from('attendance_events').insert({
+          employee_id,
+          attendance_id: activeShift.id,
+          event_type: 'istirahat_kembali',
+          occurred_at: nowIso,
+          match_distance,
+        });
+      });
+
+      return NextResponse.json({
+        success: true,
+        mode,
+        action: 'kembali',
+        title: 'Kembali Istirahat Berhasil',
+        statusMessage: 'Selamat bertugas kembali',
+        breakStartFormatted: `${formatWibTimeShort(activeShift.istirahat_at)} WIB`,
+        durationMinutes: diffMinutes,
+        durationLabel,
+        employee: { id: employee.id, name: employee.name, position: employee.position },
+        occurredAt: nowIso,
+        formattedDate: formatWibDateFull(now),
+        formattedTime: formatWibTimeSeconds(now),
+      });
+    }
+
+    // 3. Keduanya sudah terisi -> Sudah menyelesaikan istirahat shift ini
+    const kembaliStr = activeShift.istirahat_kembali_at
+      ? formatWibTimeShort(activeShift.istirahat_kembali_at)
+      : formatWibTimeShort(nowIso);
+
+    return NextResponse.json(
+      {
+        duplicate: true,
+        error: `Sudah menyelesaikan istirahat shift ini (Mulai ${formatWibTimeShort(activeShift.istirahat_at)} WIB s/d ${kembaliStr} WIB).`,
+        employeeName: employee.name,
+      },
+      { status: 409 }
+    );
   }
 
   // mode === 'pulang' (mendukung shift melewati tengah malam hingga 24 jam ke belakang)

@@ -2,7 +2,7 @@ export type UserRole = 'superadmin' | 'admin' | 'absen';
 
 export type TripType = 'FLM' | 'RPL' | 'CIT';
 
-export type AttendanceEventType = 'masuk' | 'istirahat' | 'pulang';
+export type AttendanceEventType = 'masuk' | 'istirahat' | 'istirahat_kembali' | 'pulang';
 
 export type InsuranceType = 'non_asuransi' | 'asuransi';
 
@@ -89,6 +89,7 @@ export interface Attendance {
   work_date: string;
   masuk_at: string | null;
   istirahat_at: string | null;
+  istirahat_kembali_at: string | null;
   pulang_at: string | null;
   created_at: string;
   employee?: Pick<Employee, 'id' | 'name' | 'position' | 'employee_no'>;

@@ -12,7 +12,7 @@ const CARDS = [
   },
   {
     title: 'ISTIRAHAT',
-    subtitle: 'Catat jam istirahat',
+    subtitle: 'Mulai & kembali istirahat',
     href: '/absen/istirahat',
     icon: Coffee,
     gradient: 'from-sky-500 to-blue-600',

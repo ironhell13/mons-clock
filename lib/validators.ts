@@ -152,7 +152,7 @@ export const goodsLogSchema = z.object({
 
 export const attendanceScanSchema = z.object({
   employee_id: z.string().uuid('ID karyawan tidak valid.'),
-  mode: z.enum(['masuk', 'istirahat', 'pulang']),
+  mode: z.enum(['masuk', 'istirahat', 'istirahat_kembali', 'pulang']),
   match_distance: z.number().min(0).max(2),
 });
 

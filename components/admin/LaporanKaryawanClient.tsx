@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
+  formatMinutesHuman,
   formatWibDateTime,
   formatWibDateTimeExcel,
   fromWibDatetimeLocal,
@@ -39,6 +40,7 @@ interface AttendanceRow {
   work_date: string;
   masuk_at: string | null;
   istirahat_at: string | null;
+  istirahat_kembali_at: string | null;
   pulang_at: string | null;
   employee: { id: string; name: string; position: string; employee_no: string } | null;
 }
@@ -73,6 +75,7 @@ export function LaporanKaryawanClient() {
   const [corrWorkDate, setCorrWorkDate] = useState(getWibDateString());
   const [corrMasuk, setCorrMasuk] = useState('');
   const [corrIstirahat, setCorrIstirahat] = useState('');
+  const [corrIstirahatKembali, setCorrIstirahatKembali] = useState('');
   const [corrPulang, setCorrPulang] = useState('');
   const [corrReason, setCorrReason] = useState('');
   const [saving, setSaving] = useState(false);
@@ -150,6 +153,7 @@ export function LaporanKaryawanClient() {
     setCorrWorkDate(row.work_date);
     setCorrMasuk(toWibDatetimeLocal(row.masuk_at));
     setCorrIstirahat(toWibDatetimeLocal(row.istirahat_at));
+    setCorrIstirahatKembali(toWibDatetimeLocal(row.istirahat_kembali_at));
     setCorrPulang(toWibDatetimeLocal(row.pulang_at));
     setCorrReason('');
   };
@@ -162,6 +166,7 @@ export function LaporanKaryawanClient() {
     setCorrWorkDate(today);
     setCorrMasuk(`${today}T08:00`);
     setCorrIstirahat('');
+    setCorrIstirahatKembali('');
     setCorrPulang('');
     setCorrReason('');
   };
@@ -184,6 +189,14 @@ export function LaporanKaryawanClient() {
         return;
       }
     }
+    if (corrIstirahat && corrIstirahatKembali) {
+      const iStart = fromWibDatetimeLocal(corrIstirahat);
+      const iEnd = fromWibDatetimeLocal(corrIstirahatKembali);
+      if (iStart && iEnd && new Date(iEnd) < new Date(iStart)) {
+        toast.error('Jam kembali istirahat tidak boleh lebih awal dari jam mulai istirahat.');
+        return;
+      }
+    }
 
     setSaving(true);
     try {
@@ -197,6 +210,7 @@ export function LaporanKaryawanClient() {
           work_date: corrWorkDate,
           masuk_local: corrMasuk || null,
           istirahat_local: corrIstirahat || null,
+          istirahat_kembali_local: corrIstirahatKembali || null,
           pulang_local: corrPulang || null,
           reason: corrReason.trim(),
         }),
@@ -218,14 +232,32 @@ export function LaporanKaryawanClient() {
   };
 
   const handleExport = () => {
-    const headers = ['MASUK', 'ISTIRAHAT', 'PULANG', 'STAFF', 'DIVISI/JABATAN'];
-    const rows = filtered.map((r) => ({
-      MASUK: formatWibDateTimeExcel(r.masuk_at),
-      ISTIRAHAT: formatWibDateTimeExcel(r.istirahat_at),
-      PULANG: formatWibDateTimeExcel(r.pulang_at),
-      STAFF: r.employee?.name ?? '-',
-      'DIVISI/JABATAN': r.employee?.position ?? '-',
-    }));
+    const headers = [
+      'MASUK',
+      'MULAI ISTIRAHAT',
+      'KEMBALI ISTIRAHAT',
+      'DURASI ISTIRAHAT',
+      'PULANG',
+      'STAFF',
+      'DIVISI/JABATAN',
+    ];
+    const rows = filtered.map((r) => {
+      let durationStr = '-';
+      if (r.istirahat_at && r.istirahat_kembali_at) {
+        const diffMins =
+          (new Date(r.istirahat_kembali_at).getTime() - new Date(r.istirahat_at).getTime()) / 60000;
+        durationStr = formatMinutesHuman(diffMins);
+      }
+      return {
+        MASUK: formatWibDateTimeExcel(r.masuk_at),
+        'MULAI ISTIRAHAT': formatWibDateTimeExcel(r.istirahat_at),
+        'KEMBALI ISTIRAHAT': formatWibDateTimeExcel(r.istirahat_kembali_at),
+        'DURASI ISTIRAHAT': durationStr,
+        PULANG: formatWibDateTimeExcel(r.pulang_at),
+        STAFF: r.employee?.name ?? '-',
+        'DIVISI/JABATAN': r.employee?.position ?? '-',
+      };
+    });
     exportRowsToExcel('Mutasi_Karyawan.xlsx', 'Mutasi Karyawan', rows, headers);
     toast.success('Export Mutasi Karyawan berhasil.');
   };
@@ -335,7 +367,8 @@ export function LaporanKaryawanClient() {
                       <ArrowUpDown className="w-3.5 h-3.5 opacity-60" />
                     </button>
                   </th>
-                  <th className="px-4 py-3">Istirahat</th>
+                  <th className="px-4 py-3">Mulai Istirahat</th>
+                  <th className="px-4 py-3">Kembali Istirahat</th>
                   <th className="px-4 py-3">Pulang</th>
                   <th className="px-4 py-3">Staff</th>
                   <th className="px-4 py-3">Divisi/Jabatan</th>
@@ -343,25 +376,57 @@ export function LaporanKaryawanClient() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-sky">
-                {paginated.map((row) => (
-                  <tr key={row.id} className="hover:bg-page/50">
-                    <td className="px-4 py-3 whitespace-nowrap tabular-nums font-medium text-ink">
-                      {formatWibDateTime(row.masuk_at)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap tabular-nums text-ink-muted">
-                      {formatWibDateTime(row.istirahat_at)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap tabular-nums font-medium">
-                      {row.pulang_at ? (
-                        formatWibDateTime(row.pulang_at)
-                      ) : (
-                        <span className="inline-flex rounded-full bg-amber-100 text-amber-800 px-2.5 py-0.5 text-xs font-semibold">
-                          Belum pulang
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 font-semibold text-ink">{row.employee?.name ?? '-'}</td>
-                    <td className="px-4 py-3 text-ink-muted">{row.employee?.position ?? '-'}</td>
+                {paginated.map((row) => {
+                  const hasBreakStart = Boolean(row.istirahat_at);
+                  const hasBreakEnd = Boolean(row.istirahat_kembali_at);
+                  let breakDurationLabel: string | null = null;
+                  if (row.istirahat_at && row.istirahat_kembali_at) {
+                    const diffM =
+                      (new Date(row.istirahat_kembali_at).getTime() -
+                        new Date(row.istirahat_at).getTime()) /
+                      60000;
+                    breakDurationLabel = formatMinutesHuman(diffM);
+                  }
+
+                  return (
+                    <tr key={row.id} className="hover:bg-page/50">
+                      <td className="px-4 py-3 whitespace-nowrap tabular-nums font-medium text-ink">
+                        {formatWibDateTime(row.masuk_at)}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap tabular-nums text-ink-muted">
+                        {formatWibDateTime(row.istirahat_at)}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap tabular-nums font-medium">
+                        {hasBreakEnd ? (
+                          <div>
+                            <span className="text-ink-muted">
+                              {formatWibDateTime(row.istirahat_kembali_at)}
+                            </span>
+                            {breakDurationLabel && (
+                              <span className="block text-xs font-bold text-primary-700">
+                                {breakDurationLabel}
+                              </span>
+                            )}
+                          </div>
+                        ) : hasBreakStart && !row.pulang_at ? (
+                          <span className="inline-flex rounded-full bg-amber-100 text-amber-800 px-2.5 py-0.5 text-xs font-semibold">
+                            Sedang istirahat
+                          </span>
+                        ) : (
+                          <span className="text-ink-muted">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap tabular-nums font-medium">
+                        {row.pulang_at ? (
+                          formatWibDateTime(row.pulang_at)
+                        ) : (
+                          <span className="inline-flex rounded-full bg-amber-100 text-amber-800 px-2.5 py-0.5 text-xs font-semibold">
+                            Belum pulang
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-ink">{row.employee?.name ?? '-'}</td>
+                      <td className="px-4 py-3 text-ink-muted">{row.employee?.position ?? '-'}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1.5">
                         <button
@@ -384,7 +449,8 @@ export function LaporanKaryawanClient() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           </div>
@@ -445,14 +511,25 @@ export function LaporanKaryawanClient() {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-semibold text-ink mb-1">Jam Istirahat (WIB)</label>
-            <input
-              type="datetime-local"
-              value={corrIstirahat}
-              onChange={(e) => setCorrIstirahat(e.target.value)}
-              className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-semibold text-ink mb-1">Mulai Istirahat (WIB)</label>
+              <input
+                type="datetime-local"
+                value={corrIstirahat}
+                onChange={(e) => setCorrIstirahat(e.target.value)}
+                className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-ink mb-1">Kembali Istirahat (WIB)</label>
+              <input
+                type="datetime-local"
+                value={corrIstirahatKembali}
+                onChange={(e) => setCorrIstirahatKembali(e.target.value)}
+                className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
+              />
+            </div>
           </div>
 
           <div>

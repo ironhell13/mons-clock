@@ -4,7 +4,6 @@ import { use, useCallback, useState } from 'react';
 import Link from 'next/link';
 import { notFound, useRouter } from 'next/navigation';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import type { AttendanceEventType } from '@/types/database';
 import type { FaceMatchSuccess } from '@/lib/face';
 import { DynamicFaceScanner } from '@/components/face/DynamicFaceWidgets';
 import {
@@ -12,14 +11,14 @@ import {
   AttendanceWarningModal,
 } from '@/components/absen/AttendanceSuccessModal';
 
-const MODE_LABELS: Record<AttendanceEventType, { title: string; subtitle: string }> = {
+const MODE_LABELS: Record<'masuk' | 'istirahat' | 'pulang', { title: string; subtitle: string }> = {
   masuk: {
     title: 'Absen MASUK',
     subtitle: 'Hadapkan wajah ke kamera untuk mencatat jam kedatangan Anda.',
   },
   istirahat: {
     title: 'Absen ISTIRAHAT',
-    subtitle: 'Hadapkan wajah ke kamera untuk mencatat jam mulai istirahat.',
+    subtitle: 'Hadapkan wajah ke kamera untuk mencatat mulai atau kembali istirahat.',
   },
   pulang: {
     title: 'Absen PULANG',
@@ -27,7 +26,7 @@ const MODE_LABELS: Record<AttendanceEventType, { title: string; subtitle: string
   },
 };
 
-function isValidMode(v: string): v is AttendanceEventType {
+function isValidMode(v: string): v is 'masuk' | 'istirahat' | 'pulang' {
   return v === 'masuk' || v === 'istirahat' || v === 'pulang';
 }
 
@@ -51,6 +50,9 @@ export default function AbsenModePage({
     position: string;
     dateLabel: string;
     timeLabel: string;
+    title?: string;
+    subtitle?: string;
+    extraRows?: { label: string; value: string }[];
   } | null>(null);
   const [warningData, setWarningData] = useState<{
     title: string;
@@ -81,6 +83,11 @@ export default function AbsenModePage({
           employee?: { name: string; position: string };
           formattedDate?: string;
           formattedTime?: string;
+          action?: 'mulai' | 'kembali';
+          title?: string;
+          statusMessage?: string;
+          breakStartFormatted?: string;
+          durationLabel?: string;
         };
 
         if (!res.ok) {
@@ -92,11 +99,28 @@ export default function AbsenModePage({
           return;
         }
 
+        const extraRows: { label: string; value: string }[] = [];
+        if (json.action === 'kembali') {
+          if (json.breakStartFormatted) {
+            extraRows.push({ label: 'Mulai Istirahat', value: json.breakStartFormatted });
+          }
+          if (json.durationLabel) {
+            extraRows.push({ label: 'Durasi Istirahat', value: json.durationLabel });
+          }
+        } else if (json.action === 'mulai') {
+          extraRows.push({ label: 'Status', value: 'Mulai Istirahat' });
+        }
+
         setSuccessData({
           name: json.employee?.name ?? match.name,
           position: json.employee?.position ?? match.subtitle,
           dateLabel: json.formattedDate ?? '',
           timeLabel: json.formattedTime ?? '',
+          title: json.title ?? 'Absen Berhasil',
+          subtitle: json.statusMessage
+            ? `${json.statusMessage} — ${json.employee?.position ?? match.subtitle}`
+            : `${meta.title} — ${json.employee?.position ?? match.subtitle}`,
+          extraRows: extraRows.length > 0 ? extraRows : undefined,
         });
       } catch {
         setWarningData({
@@ -109,7 +133,7 @@ export default function AbsenModePage({
         setRecognizedName(null);
       }
     },
-    [mode, submitting, successData, warningData]
+    [meta.title, mode, submitting, successData, warningData]
   );
 
   const handleDone = useCallback(() => {
@@ -148,11 +172,12 @@ export default function AbsenModePage({
 
       <AttendanceSuccessModal
         open={Boolean(successData)}
-        title="Absen Berhasil"
-        subtitle={`${meta.title} — ${successData?.position ?? ''}`}
+        title={successData?.title ?? 'Absen Berhasil'}
+        subtitle={successData?.subtitle}
         name={successData?.name ?? ''}
         dateLabel={successData?.dateLabel ?? ''}
         timeLabel={successData?.timeLabel ?? ''}
+        extraRows={successData?.extraRows}
         onClose={handleDone}
       />
 

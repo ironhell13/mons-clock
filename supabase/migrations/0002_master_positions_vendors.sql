@@ -41,3 +41,4 @@ select distinct trim(regexp_replace(vendor, '\s+', ' ', 'g'))
 from public.escorts
 where trim(vendor) <> ''
 on conflict (name) do nothing;
+

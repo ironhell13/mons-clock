@@ -18,7 +18,7 @@ export default async function AdminSummaryPage() {
   ] = await Promise.all([
     supabase
       .from('attendance')
-      .select('id, masuk_at, istirahat_at, pulang_at')
+      .select('id, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
       .eq('work_date', todayWib),
     supabase
       .from('trips')
@@ -40,9 +40,17 @@ export default async function AdminSummaryPage() {
     supabase.from('workshop_logs').select('id', { count: 'exact', head: true }).is('finish_date', null),
   ]);
 
-  const attRows = attendanceRes.data ?? [];
+  const attRows = (attendanceRes.data ?? []) as unknown as {
+    id: string;
+    masuk_at: string | null;
+    istirahat_at: string | null;
+    istirahat_kembali_at: string | null;
+    pulang_at: string | null;
+  }[];
   const masukCount = attRows.filter((r) => Boolean(r.masuk_at)).length;
-  const istirahatCount = attRows.filter((r) => Boolean(r.istirahat_at) && !r.pulang_at).length;
+  const istirahatCount = attRows.filter(
+    (r) => Boolean(r.istirahat_at) && !r.istirahat_kembali_at && !r.pulang_at
+  ).length;
   const pulangCount = attRows.filter((r) => Boolean(r.pulang_at)).length;
   const openTrips = (openTripsRes.data ?? []) as unknown as {
     id: string;
