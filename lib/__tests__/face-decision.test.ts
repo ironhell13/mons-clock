@@ -202,9 +202,19 @@ describe('Multi-Frame Consistency (filterAndAverageDescriptors)', () => {
     expect(res.ok).toBe(false);
   });
 
-  it('harus menolak jika jumlah frame kurang dari FRAMES_REQUIRED', () => {
-    const frames = [makeVector(0.1), makeVector(0.1)];
+  it('harus menerima 1 frame flash capture berkualitas tinggi jika FRAMES_REQUIRED = 1', () => {
+    const frames = [makeVector(0.15)];
     const res = filterAndAverageDescriptors(frames, FACE_CONFIG);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.framesUsed).toBe(1);
+      expect(res.query[0]).toBeCloseTo(0.15, 2);
+    }
+  });
+
+  it('harus menolak jika jumlah frame kurang dari FRAMES_REQUIRED', () => {
+    const frames = [makeVector(0.1)];
+    const res = filterAndAverageDescriptors(frames, { ...FACE_CONFIG, FRAMES_REQUIRED: 2 });
     expect(res.ok).toBe(false);
   });
 });

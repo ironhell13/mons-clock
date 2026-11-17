@@ -48,7 +48,7 @@ export const FACE_CONFIG: FaceConfig = {
   LR_BRIGHTNESS_RATIO: [0.6, 1.6], // Rasio luminance kiri/kanan (deteksi backlight/bayangan)
   MAX_CLIPPED_PIXEL_PCT: 8, // Maksimal % piksel jenuh > 250 (silau)
   MIN_SHARPNESS: 60, // Variance Laplacian minimum pada crop 160x160 grayscale
-  FRAMES_REQUIRED: 4, // Jumlah frame lolos kualitas per scan verifikasi
+  FRAMES_REQUIRED: 1, // Flash Capture Mode: 1 frame beresolusi optimal saat flash layar (~0.5s)
   FRAME_SPACING_MS: 150, // Jeda waktu minimum antar pengambilan frame
   MAX_FRAME_SPREAD: 0.30, // Jarak antar-frame maksimum (konsistensi multi-frame)
 
@@ -59,8 +59,8 @@ export const FACE_CONFIG: FaceConfig = {
   CANDIDATE_WINDOW: 0.10, // Kandidat dengan skor <= S1 + window ditawarkan di zona confirm
 
   // === Pendaftaran Wajah (Enrollment) ===
-  ENROLL_SAMPLES: 3, // 3 sampel berkualitas tinggi (Cukup Hadap Kamera, cepat & tidak repot)
-  ENROLL_FRAMES_PER_SAMPLE: 2, // Jumlah frame yang dirata-ratakan per sampel
+  ENROLL_SAMPLES: 3, // 3 sampel berkualitas tinggi (Flash Capture cepat & tidak repot)
+  ENROLL_FRAMES_PER_SAMPLE: 1, // 1 frame per flash shot berkualitas tinggi
   ENROLL_MAX_OUTLIER_DIST: 0.35, // Jarak maksimum sampel ke centroid dirinya sendiri
   ENROLL_LOOKALIKE_GUARD: 0.50, // Skor ke orang lain di bawah nilai ini akan ditolak/diberi flag mirip
   MAX_SAMPLES_PER_SUBJECT: 12, // Batas maksimum sampel per orang

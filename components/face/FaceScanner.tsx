@@ -8,16 +8,17 @@ import {
   RefreshCw,
   ScanFace,
   X,
+  Zap,
 } from 'lucide-react';
 import type { SubjectType, VerificationPurpose } from '@/types/database';
-import { ensureFaceModelsLoaded, extractFaceDescriptor } from '@/lib/face';
+import { ensureFaceModelsLoaded, extractFaceDescriptor, playBeep } from '@/lib/face';
 import {
   analyzeMediaPipeResult,
   capturePortraitSampleCanvas,
   getFaceLandmarker,
   type CropQualityMetrics,
+  type NormalizedFaceBox,
 } from '@/lib/mediapipe';
-import { FACE_CONFIG } from '@/lib/face-config';
 import { ConfirmIdentitySheet, type ConfirmCandidate } from './ConfirmIdentitySheet';
 
 export interface FaceScanSuccessPayload {
@@ -65,11 +66,8 @@ export function FaceScanner({
 
   const processingRef = useRef<boolean>(false);
   const cooldownUntilRef = useRef<number>(0);
-
-  // Stabilitas & Multi-frame state
   const stableStartTimeRef = useRef<number | null>(null);
-  const collectedFramesRef = useRef<number[][]>([]);
-  const lastFrameCaptureAtRef = useRef<number>(0);
+  const lastBoxRef = useRef<NormalizedFaceBox | null>(null);
   const pitchFrontalRef = useRef<number>(0);
 
   const [cameraReady, setCameraReady] = useState(false);
@@ -79,6 +77,9 @@ export function FaceScanner({
   const [statusTone, setStatusTone] = useState<'neutral' | 'ready' | 'success' | 'warn' | 'error'>('neutral');
   const [failCount, setFailCount] = useState(0);
   const [retryCounter, setRetryCounter] = useState(0);
+
+  // Efek Flash Layar (Screen Flash / Chromatic Illumination)
+  const [isFlashing, setIsFlashing] = useState(false);
 
   // State Konfirmasi (Zona Confirm)
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -93,7 +94,6 @@ export function FaceScanner({
     pitch?: number;
     rollDeg?: number;
     cropMetrics?: CropQualityMetrics;
-    framesCollected?: number;
     lastScore?: number | null;
     lastMargin?: number | null;
   }>({});
@@ -121,10 +121,138 @@ export function FaceScanner({
 
   const resetCaptureState = useCallback(() => {
     stableStartTimeRef.current = null;
-    collectedFramesRef.current = [];
-    lastFrameCaptureAtRef.current = 0;
   }, []);
 
+  // Eksekusi Pemindaian Cepat Berbantu Flash Layar (Screen Flash Capture)
+  const performFlashCapture = useCallback(
+    async (box: NormalizedFaceBox) => {
+      const video = videoRef.current;
+      if (!video || processingRef.current) return;
+
+      processingRef.current = true;
+      setIsFlashing(true);
+      setStatusTone('ready');
+      setStatusMessage('Menangkap foto wajah...');
+
+      // Jeda 120ms agar pancaran cahaya layar menyinari wajah secara optimal
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      let descriptor: number[] | null = null;
+      let metrics: CropQualityMetrics | undefined;
+      try {
+        const extractRes = await extractFaceDescriptor(video, box);
+        descriptor = extractRes.descriptor;
+        metrics = extractRes.metrics;
+      } finally {
+        setIsFlashing(false);
+      }
+
+      if (showDebug && metrics) {
+        setDebugMetrics((prev) => ({ ...prev, cropMetrics: metrics }));
+      }
+
+      if (!descriptor) {
+        processingRef.current = false;
+        resetCaptureState();
+        setStatusTone('warn');
+        setStatusMessage('Wajah kurang jelas atau bergerak. Coba tahan posisi.');
+        cooldownUntilRef.current = Date.now() + 600;
+        return;
+      }
+
+      // Mainkan suara tangkap
+      playBeep(880, 80);
+
+      setStatusTone('ready');
+      setStatusMessage('Memverifikasi identitas di server...');
+
+      try {
+        const verifyRes = await fetch('/api/face/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            purpose: normalizedPurpose,
+            subject_type: subjectType,
+            descriptors: [descriptor],
+          }),
+        });
+
+        const verifyJson = (await verifyRes.json()) as {
+          status?: 'accepted' | 'confirm' | 'rejected' | 'retry';
+          verification_id?: string;
+          subject?: { id: string; name: string; subtitle: string; code?: string };
+          candidates?: ConfirmCandidate[];
+          score?: number | null;
+          margin?: number | null;
+          reason?: string;
+          bestScore?: number | null;
+        };
+
+        if (showDebug) {
+          setDebugMetrics((prev) => ({
+            ...prev,
+            lastScore: verifyJson.score ?? verifyJson.bestScore ?? null,
+            lastMargin: verifyJson.margin ?? null,
+          }));
+        }
+
+        // 1. ZONA ACCEPT: Terverifikasi Yakin
+        if (verifyJson.status === 'accepted' && verifyJson.verification_id && verifyJson.subject) {
+          playBeep(1174, 150); // Nada sukses
+          setStatusTone('success');
+          setStatusMessage(`Terverifikasi: ${verifyJson.subject.name}`);
+          await onResult({
+            verification_id: verifyJson.verification_id,
+            subject_type: subjectType,
+            subject_id: verifyJson.subject.id,
+            name: verifyJson.subject.name,
+            subtitle: verifyJson.subject.subtitle,
+            code: verifyJson.subject.code,
+          });
+          processingRef.current = false;
+          return;
+        }
+
+        // 2. ZONA CONFIRM: Wajah Memiliki Kemiripan dengan Lebih dari 1 Orang
+        if (verifyJson.status === 'confirm' && verifyJson.verification_id && verifyJson.candidates) {
+          setStatusTone('warn');
+          setStatusMessage('Silakan konfirmasi nama Anda');
+          setConfirmVerificationId(verifyJson.verification_id);
+          setConfirmCandidates(verifyJson.candidates);
+          setConfirmOpen(true);
+          processingRef.current = false;
+          return;
+        }
+
+        // 3. RETRY: Frame tidak konsisten / outlier
+        if (verifyJson.status === 'retry') {
+          setStatusTone('warn');
+          setStatusMessage(verifyJson.reason ?? 'Coba hadap lurus ke kamera');
+          cooldownUntilRef.current = Date.now() + 800;
+          processingRef.current = false;
+          resetCaptureState();
+          return;
+        }
+
+        // 4. ZONA REJECT: Wajah Tidak Dikenali
+        setFailCount((prev) => prev + 1);
+        setStatusTone('error');
+        setStatusMessage('Wajah tidak dikenali dalam sistem. Silakan coba lagi.');
+        cooldownUntilRef.current = Date.now() + 1200;
+        processingRef.current = false;
+        resetCaptureState();
+      } catch {
+        resetCaptureState();
+        processingRef.current = false;
+        setStatusTone('error');
+        setStatusMessage('Gagal menghubungi server verifikasi.');
+        cooldownUntilRef.current = Date.now() + 1000;
+      }
+    },
+    [normalizedPurpose, onResult, resetCaptureState, showDebug, subjectType]
+  );
+
+  // Inisialisasi Kamera & Model AI
   useEffect(() => {
     let cancelled = false;
 
@@ -213,7 +341,7 @@ export function FaceScanner({
     };
   }, [retryCounter, stopCamera]);
 
-  // Loop Pendeteksian Multi-Frame & Verifikasi di Server
+  // Loop Pendeteksian Wajah Otomatis
   useEffect(() => {
     if (!cameraReady || !modelsReady || paused || confirmOpen) {
       if (timerRef.current !== null) {
@@ -269,11 +397,14 @@ export function FaceScanner({
         // Jika wajah belum lolos gate geometris / pose MediaPipe
         if (!analysis.statusOk || !analysis.box) {
           resetCaptureState();
+          lastBoxRef.current = null;
           setStatusTone('neutral');
           setStatusMessage(analysis.message);
-          scheduleNext(200);
+          scheduleNext(180);
           return;
         }
+
+        lastBoxRef.current = analysis.box;
 
         // Kalibrasi pitch frontal jika belum diset
         if (pitchFrontalRef.current === 0) {
@@ -282,7 +413,7 @@ export function FaceScanner({
 
         const now = Date.now();
 
-        // Cek kestabilan posisi wajah minimal 600ms sebelum mulai multi-frame capture
+        // Cek kestabilan posisi wajah minimal 200ms sebelum mulai flash capture
         if (stableStartTimeRef.current === null) {
           stableStartTimeRef.current = now;
           setStatusTone('ready');
@@ -292,134 +423,15 @@ export function FaceScanner({
         }
 
         const stableDuration = now - stableStartTimeRef.current;
-        if (stableDuration < 500) {
+        if (stableDuration < 200) {
           setStatusTone('ready');
           setStatusMessage('Tahan posisi wajah...');
-          scheduleNext(100);
+          scheduleNext(80);
           return;
         }
 
-        // Kumpulkan frame dengan jeda minimal FRAME_SPACING_MS (150ms)
-        const timeSinceLastFrame = now - lastFrameCaptureAtRef.current;
-        if (timeSinceLastFrame < FACE_CONFIG.FRAME_SPACING_MS) {
-          scheduleNext(50);
-          return;
-        }
-
-        // Ekstrak descriptor dari frame saat ini
-        const extractRes = await extractFaceDescriptor(video, analysis.box);
-
-        if (showDebug && extractRes.metrics) {
-          setDebugMetrics((prev) => ({
-            ...prev,
-            cropMetrics: extractRes.metrics,
-          }));
-        }
-
-        if (!extractRes.descriptor) {
-          setStatusTone('warn');
-          setStatusMessage(extractRes.reason ?? 'Posisikan wajah lebih jelas');
-          scheduleNext(150);
-          return;
-        }
-
-        collectedFramesRef.current.push(extractRes.descriptor);
-        lastFrameCaptureAtRef.current = now;
-
-        const count = collectedFramesRef.current.length;
-        if (showDebug) {
-          setDebugMetrics((prev) => ({ ...prev, framesCollected: count }));
-        }
-
-        setStatusTone('ready');
-        setStatusMessage(`Merekam frame (${count}/${FACE_CONFIG.FRAMES_REQUIRED})...`);
-
-        // Jika frame belum mencapai FRAMES_REQUIRED, lanjutkan kumpulkan
-        if (count < FACE_CONFIG.FRAMES_REQUIRED) {
-          scheduleNext(100);
-          return;
-        }
-
-        // Setelah terkumpul cukup frame lolos kualitas, kirim ke server untuk verifikasi
-        processingRef.current = true;
-        setStatusTone('ready');
-        setStatusMessage('Memverifikasi identitas di server...');
-
-        const descriptorsToSend = [...collectedFramesRef.current];
-        resetCaptureState();
-
-        const verifyRes = await fetch('/api/face/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            purpose: normalizedPurpose,
-            subject_type: subjectType,
-            descriptors: descriptorsToSend,
-          }),
-        });
-
-        const verifyJson = (await verifyRes.json()) as {
-          status?: 'accepted' | 'confirm' | 'rejected' | 'retry';
-          verification_id?: string;
-          subject?: { id: string; name: string; subtitle: string; code?: string };
-          candidates?: ConfirmCandidate[];
-          score?: number | null;
-          margin?: number | null;
-          reason?: string;
-          bestScore?: number | null;
-        };
-
-        if (showDebug) {
-          setDebugMetrics((prev) => ({
-            ...prev,
-            lastScore: verifyJson.score ?? verifyJson.bestScore ?? null,
-            lastMargin: verifyJson.margin ?? null,
-          }));
-        }
-
-        // 1. ZONA ACCEPT: Identitas Terverifikasi Yakin
-        if (verifyJson.status === 'accepted' && verifyJson.verification_id && verifyJson.subject) {
-          setStatusTone('success');
-          setStatusMessage(`Terverifikasi: ${verifyJson.subject.name}`);
-          await onResult({
-            verification_id: verifyJson.verification_id,
-            subject_type: subjectType,
-            subject_id: verifyJson.subject.id,
-            name: verifyJson.subject.name,
-            subtitle: verifyJson.subject.subtitle,
-            code: verifyJson.subject.code,
-          });
-          processingRef.current = false;
-          return;
-        }
-
-        // 2. ZONA CONFIRM: Wajah Memiliki Kemiripan dengan Lebih dari 1 Orang
-        if (verifyJson.status === 'confirm' && verifyJson.verification_id && verifyJson.candidates) {
-          setStatusTone('warn');
-          setStatusMessage('Silakan konfirmasi nama Anda');
-          setConfirmVerificationId(verifyJson.verification_id);
-          setConfirmCandidates(verifyJson.candidates);
-          setConfirmOpen(true);
-          processingRef.current = false;
-          return;
-        }
-
-        // 3. RETRY: Frame tidak konsisten / outlier
-        if (verifyJson.status === 'retry') {
-          setStatusTone('warn');
-          setStatusMessage(verifyJson.reason ?? 'Gerakan terdeteksi, coba tahan stabil');
-          cooldownUntilRef.current = Date.now() + 800;
-          processingRef.current = false;
-          scheduleNext(300);
-          return;
-        }
-
-        // 4. ZONA REJECT: Wajah Tidak Dikenali
-        setFailCount((prev) => prev + 1);
-        setStatusTone('error');
-        setStatusMessage('Wajah tidak dikenali dalam sistem. Silakan coba lagi.');
-        cooldownUntilRef.current = Date.now() + 1000;
-        processingRef.current = false;
+        // Wajah stabil: Picu Flash Screen Capture instan!
+        await performFlashCapture(analysis.box);
         scheduleNext(300);
       } catch {
         resetCaptureState();
@@ -434,18 +446,41 @@ export function FaceScanner({
       active = false;
       if (timerRef.current !== null) clearTimeout(timerRef.current);
     };
-  }, [cameraReady, modelsReady, paused, confirmOpen, normalizedPurpose, subjectType, showDebug, onResult, resetCaptureState]);
+  }, [cameraReady, modelsReady, paused, confirmOpen, performFlashCapture, resetCaptureState, showDebug]);
 
   return (
     <div className="w-full flex flex-col items-center gap-3">
+      {/* Flash Screen Overlay (Aktif sesaat untuk menerangi wajah pengguna) */}
+      <div
+        className={`fixed inset-0 pointer-events-none z-50 transition-opacity duration-150 ease-out flex items-center justify-center ${
+          isFlashing ? 'opacity-100 bg-white/95 backdrop-blur-[2px]' : 'opacity-0'
+        }`}
+        aria-hidden="true"
+      >
+        {isFlashing && (
+          <div className="text-slate-800 text-sm font-black tracking-wider uppercase bg-white/90 px-5 py-2.5 rounded-full shadow-2xl border border-slate-200 animate-pulse">
+            ⚡ Memindai Wajah...
+          </div>
+        )}
+      </div>
+
       {(title || subtitle) && (
         <div className="text-center">
           {title && <h2 className="text-sm font-bold text-ink">{title}</h2>}
           {subtitle && <p className="text-xs text-ink-muted">{subtitle}</p>}
         </div>
       )}
+
       {/* Container Kamera Portrait */}
-      <div className="relative w-full aspect-[3/4] max-w-sm rounded-3xl overflow-hidden bg-slate-900 border-2 border-border-sky shadow-card flex items-center justify-center">
+      <div
+        onClick={() => {
+          if (lastBoxRef.current && !processingRef.current && cameraReady && modelsReady) {
+            performFlashCapture(lastBoxRef.current);
+          }
+        }}
+        className="relative w-full aspect-[3/4] max-w-sm rounded-3xl overflow-hidden bg-slate-900 border-2 border-border-sky shadow-card flex items-center justify-center cursor-pointer select-none"
+        title="Klik untuk memicu scan cepat (Flash)"
+      >
         {/* Feed Video Kamera */}
         <video
           ref={videoRef}
@@ -496,7 +531,10 @@ export function FaceScanner({
             </div>
             <button
               type="button"
-              onClick={() => setRetryCounter((p) => p + 1)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRetryCounter((p) => p + 1);
+              }}
               className="mt-2 inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 text-xs font-bold transition shadow-soft"
             >
               <RefreshCw className="w-4 h-4" />
@@ -508,15 +546,18 @@ export function FaceScanner({
         {/* Tombol Batal Melayang */}
         <button
           type="button"
-          onClick={onCancel}
-          className="absolute top-3 right-3 w-10 h-10 rounded-full bg-slate-900/60 hover:bg-slate-900/90 text-white flex items-center justify-center backdrop-blur-sm transition border border-white/20 active:scale-95"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCancel();
+          }}
+          className="absolute top-3 right-3 w-10 h-10 rounded-full bg-slate-900/60 hover:bg-slate-900/90 text-white flex items-center justify-center backdrop-blur-sm transition border border-white/20 active:scale-95 z-20"
           title="Batal"
         >
           <X className="w-5 h-5" />
         </button>
 
         {/* Status Badge Melayang di Bagian Bawah Kamera */}
-        <div className="absolute bottom-3 inset-x-3 pointer-events-none">
+        <div className="absolute bottom-3 inset-x-3 pointer-events-none z-20">
           <div
             className={`rounded-2xl px-4 py-2.5 backdrop-blur-md border text-center transition-all duration-200 shadow-md ${
               statusTone === 'success'
@@ -554,6 +595,25 @@ export function FaceScanner({
           </div>
         )}
       </div>
+
+      {/* Tombol Scan Cepat Manual */}
+      {cameraReady && modelsReady && !paused && !confirmOpen && (
+        <button
+          type="button"
+          onClick={() => {
+            if (lastBoxRef.current) {
+              performFlashCapture(lastBoxRef.current);
+            } else {
+              setStatusMessage('Posisikan wajah di dalam oval terlebih dahulu');
+            }
+          }}
+          disabled={processingRef.current}
+          className="inline-flex items-center gap-2 rounded-2xl bg-primary-600 hover:bg-primary-700 active:scale-95 text-white font-bold text-xs sm:text-sm px-6 py-2.5 shadow-md transition disabled:opacity-50"
+        >
+          <Zap className="w-4 h-4 text-amber-300" />
+          <span>Scan Cepat (Flash)</span>
+        </button>
+      )}
 
       {/* Tautan Bantuan Jika Gagal Scan Beberapa Kali */}
       {failCount >= 3 && showEnrollHintLink && (

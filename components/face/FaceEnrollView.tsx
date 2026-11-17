@@ -4,10 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Camera,
-  CheckCircle2,
   Loader2,
   RefreshCw,
   ShieldCheck,
+  Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { SubjectType } from '@/types/database';
@@ -15,6 +15,7 @@ import { FACE_CONFIG } from '@/lib/face-config';
 import {
   ensureFaceModelsLoaded,
   extractFaceDescriptor,
+  playBeep,
 } from '@/lib/face';
 import {
   analyzeMediaPipeResult,
@@ -105,6 +106,9 @@ export function FaceEnrollView({
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
   const [retryCounter, setRetryCounter] = useState(0);
 
+  // Efek Flash Layar untuk pencahayaan instan
+  const [isFlashing, setIsFlashing] = useState(false);
+
   const stopCamera = useCallback(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
@@ -171,7 +175,8 @@ export function FaceEnrollView({
           return;
         }
 
-        toast.success(`Berhasil mendaftarkan ${collected.length} sampel wajah v2 untuk ${subjectName}.`);
+        playBeep(1174, 200); // Nada sukses
+        toast.success(`Berhasil mendaftarkan ${collected.length} sampel wajah untuk ${subjectName}.`);
         stopCamera();
         onSuccess(json.inserted ?? collected.length);
       } catch {
@@ -188,12 +193,22 @@ export function FaceEnrollView({
       if (!video || capturingRef.current || saving || !lastBoxRef.current) return;
 
       capturingRef.current = true;
+      setIsFlashing(true);
+      setStatusMessage('Mengambil foto wajah...');
+
+      // Jeda 120ms agar pancaran cahaya layar menyinari wajah secara merata
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
       try {
         const ext = await extractFaceDescriptor(video, lastBoxRef.current);
+        setIsFlashing(false);
+
         if (!ext.descriptor) {
           setStatusMessage(ext.reason ?? 'Posisikan wajah lebih jelas & stabil.');
           return;
         }
+
+        playBeep(880, 80);
 
         const frames = [
           ...currentStepFramesRef.current,
@@ -202,7 +217,7 @@ export function FaceEnrollView({
         currentStepFramesRef.current = frames;
         setSubFrameCount(frames.length);
 
-        // Jika belum mencapai ENROLL_FRAMES_PER_SAMPLE (2 frame) dan bukan klik manual
+        // Jika belum mencapai ENROLL_FRAMES_PER_SAMPLE (1 frame) dan bukan klik manual
         if (!force && frames.length < FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE) {
           setStatusMessage(`Tahan posisi... (${frames.length}/${FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE})`);
           lastCaptureAtRef.current = Date.now();
@@ -260,6 +275,7 @@ export function FaceEnrollView({
           setStatusMessage(ENROLLMENT_STEPS[nextIdx].instruction);
         }
       } finally {
+        setIsFlashing(false);
         capturingRef.current = false;
       }
     },
@@ -344,7 +360,7 @@ export function FaceEnrollView({
 
     const runStep = async () => {
       if (!active) return;
-      if (document.hidden || capturingRef.current || Date.now() - lastCaptureAtRef.current < 250) {
+      if (document.hidden || capturingRef.current || Date.now() - lastCaptureAtRef.current < 450) {
         scheduleNext(120);
         return;
       }
@@ -396,7 +412,7 @@ export function FaceEnrollView({
         }
 
         await captureCurrentStep(false);
-        scheduleNext(250);
+        scheduleNext(300);
       } catch {
         scheduleNext(200);
       }
@@ -415,12 +431,26 @@ export function FaceEnrollView({
 
   return (
     <div className="space-y-4">
+      {/* Flash Screen Overlay (Aktif sesaat saat mengambil sampel untuk pencahayaan maksimal) */}
+      <div
+        className={`fixed inset-0 pointer-events-none z-50 transition-opacity duration-150 ease-out flex items-center justify-center ${
+          isFlashing ? 'opacity-100 bg-white/95 backdrop-blur-[2px]' : 'opacity-0'
+        }`}
+        aria-hidden="true"
+      >
+        {isFlashing && (
+          <div className="text-slate-800 text-sm font-black tracking-wider uppercase bg-white/90 px-5 py-2.5 rounded-full shadow-2xl border border-slate-200 animate-pulse">
+            ⚡ Mengambil Sampel {stepIndex + 1}/3...
+          </div>
+        )}
+      </div>
+
       {/* Banner Panduan */}
       <div className="rounded-xl bg-primary-50 border border-border-sky px-4 py-2.5 flex items-start gap-2.5">
         <ShieldCheck className="w-5 h-5 text-primary-700 shrink-0 mt-0.5" />
         <div className="text-xs text-ink-muted leading-relaxed">
-          Pendaftaran wajah untuk <strong className="text-ink">{subjectName}</strong> (3 sampel cepat, cukup hadap kamera).
-          Lepas topi, kacamata hitam, dan masker. Pastikan pencahayaan cukup &amp; merata. Foto wajah <strong>tidak disimpan</strong>.
+          Pendaftaran wajah cepat berbantu flash layar untuk <strong className="text-ink">{subjectName}</strong> (3 sampel tampak depan).
+          Cukup hadap kamera dengan santai. Foto wajah <strong>tidak disimpan</strong>.
         </div>
       </div>
 
@@ -468,7 +498,15 @@ export function FaceEnrollView({
       )}
 
       {/* Preview Kamera Portrait 3:4 */}
-      <div className="relative bg-slate-950 rounded-2xl overflow-hidden aspect-[3/4] max-w-[360px] max-h-[54vh] w-full mx-auto flex items-center justify-center">
+      <div
+        onClick={() => {
+          if (cameraReady && modelsReady && !saving && !cameraError && stepIndex < ENROLLMENT_STEPS.length) {
+            captureCurrentStep(true);
+          }
+        }}
+        className="relative bg-slate-950 rounded-2xl overflow-hidden aspect-[3/4] max-w-[360px] max-h-[54vh] w-full mx-auto flex items-center justify-center cursor-pointer select-none"
+        title="Klik kamera untuk mengambil foto instan (Flash)"
+      >
         <video
           ref={videoRef}
           playsInline
@@ -496,7 +534,10 @@ export function FaceEnrollView({
             <p className="text-sm">{cameraError}</p>
             <button
               type="button"
-              onClick={() => setRetryCounter((c) => c + 1)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRetryCounter((c) => c + 1);
+              }}
               className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-4 py-2 text-xs font-bold"
             >
               <RefreshCw className="w-4 h-4" />
@@ -506,7 +547,7 @@ export function FaceEnrollView({
         )}
 
         {cameraReady && !saving && !cameraError && (
-          <div className="absolute bottom-3 inset-x-3 flex flex-col items-center gap-1.5">
+          <div className="absolute bottom-3 inset-x-3 flex flex-col items-center gap-1.5 pointer-events-none">
             {subFrameCount > 0 && subFrameCount < FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE && (
               <div className="inline-flex items-center gap-1.5 rounded-full bg-primary-600/90 text-white text-[11px] font-bold px-3 py-0.5">
                 <span>Merekam frame {subFrameCount}/{FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE}</span>
@@ -542,10 +583,10 @@ export function FaceEnrollView({
           <button
             type="button"
             onClick={() => captureCurrentStep(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-4 py-2.5 text-sm font-semibold transition"
+            className="inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 active:scale-95 text-white px-5 py-2.5 text-sm font-bold shadow-md transition"
           >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>Ambil Manual ({stepIndex + 1}/{ENROLLMENT_STEPS.length})</span>
+            <Zap className="w-4 h-4 text-amber-300" />
+            <span>Ambil Foto (Flash) ({stepIndex + 1}/{ENROLLMENT_STEPS.length})</span>
           </button>
         )}
       </div>

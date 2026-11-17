@@ -176,6 +176,15 @@ export function filterAndAverageDescriptors(
     };
   }
 
+  // Fast-path untuk Flash Capture (1 frame pencahayaan optimal)
+  if (descriptors.length === 1) {
+    return {
+      ok: true,
+      query: [...descriptors[0]],
+      framesUsed: 1,
+    };
+  }
+
   // Hitung pairwise distance maksimum antar frame
   let maxPairwiseDist = 0;
   for (let i = 0; i < descriptors.length; i++) {
