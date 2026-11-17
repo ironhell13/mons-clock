@@ -40,29 +40,29 @@ export interface FaceConfig {
 
 export const FACE_CONFIG: FaceConfig = {
   // === Kualitas Capture di Tablet ===
-  MIN_FACE_PX: 140, // Lebar wajah minimum dalam piksel video sumber (bukan rasio)
+  MIN_FACE_PX: 130, // Lebar wajah minimum dalam piksel video sumber (bukan rasio)
   MAX_ABS_YAW: 0.18, // Toleransi hadap kiri/kanan saat verifikasi (~10 derajat, alami & nyaman)
   MAX_ABS_PITCH_DELTA: 0.18, // Selisih dari pitch frontal hasil kalibrasi (~10 derajat)
-  MAX_ABS_ROLL_DEG: 12, // Kemiringan kepala maksimum (derajat)
-  BRIGHTNESS_RANGE: [70, 190], // Rata-rata luminance crop wajah (0-255)
-  LR_BRIGHTNESS_RATIO: [0.6, 1.6], // Rasio luminance kiri/kanan (deteksi backlight/bayangan)
-  MAX_CLIPPED_PIXEL_PCT: 8, // Maksimal % piksel jenuh > 250 (silau)
-  MIN_SHARPNESS: 60, // Variance Laplacian minimum pada crop 160x160 grayscale
-  FRAMES_REQUIRED: 1, // Flash Capture Mode: 1 frame beresolusi optimal saat flash layar (~0.5s)
+  MAX_ABS_ROLL_DEG: 14, // Kemiringan kepala maksimum (derajat)
+  BRIGHTNESS_RANGE: [45, 230], // Rata-rata luminance crop wajah (0-255), fleksibel untuk lampu ruangan biasa
+  LR_BRIGHTNESS_RATIO: [0.45, 2.2], // Rasio luminance kiri/kanan (fleksibel untuk pencahayaan samping/plafon)
+  MAX_CLIPPED_PIXEL_PCT: 20, // Maksimal % piksel jenuh > 250 (toleran terhadap kilap dahi/hidung normal)
+  MIN_SHARPNESS: 25, // Variance Laplacian minimum pada crop 160x160 grayscale (cocok untuk kamera tablet)
+  FRAMES_REQUIRED: 1, // 1 frame berkualitas optimal saat posisi wajah stabil (~0.5s)
   FRAME_SPACING_MS: 150, // Jeda waktu minimum antar pengambilan frame
   MAX_FRAME_SPREAD: 0.30, // Jarak antar-frame maksimum (konsistensi multi-frame)
 
-  // === Kebijakan Keputusan di Server ===
-  ACCEPT_MAX_SCORE: 0.38, // Skor d_top2 maksimum untuk status ACCEPT
-  ACCEPT_MIN_MARGIN: 0.10, // Margin minimum (S2 - S1) untuk status ACCEPT
-  CONFIRM_MAX_SCORE: 0.46, // Skor d_top2 maksimum untuk status CONFIRM
-  CANDIDATE_WINDOW: 0.10, // Kandidat dengan skor <= S1 + window ditawarkan di zona confirm
+  // === Kebijakan Keputusan di Server (Keamanan Biometrik Ketat) ===
+  ACCEPT_MAX_SCORE: 0.32, // Skor d_top2 ketat untuk status ACCEPT (mencegah salah absen antar wajah mirip)
+  ACCEPT_MIN_MARGIN: 0.08, // Margin minimum (S2 - S1) untuk status ACCEPT
+  CONFIRM_MAX_SCORE: 0.40, // Skor d_top2 maksimum untuk status CONFIRM (di atas 0.40 langsung ditolak)
+  CANDIDATE_WINDOW: 0.08, // Kandidat dengan skor <= S1 + window ditawarkan di zona confirm
 
   // === Pendaftaran Wajah (Enrollment) ===
-  ENROLL_SAMPLES: 3, // 3 sampel berkualitas tinggi (Flash Capture cepat & tidak repot)
-  ENROLL_FRAMES_PER_SAMPLE: 1, // 1 frame per flash shot berkualitas tinggi
+  ENROLL_SAMPLES: 3, // 3 sampel berkualitas tinggi (Cepat & akurat dengan cahaya alami ruangan)
+  ENROLL_FRAMES_PER_SAMPLE: 1, // 1 frame per sampel berkualitas tinggi
   ENROLL_MAX_OUTLIER_DIST: 0.35, // Jarak maksimum sampel ke centroid dirinya sendiri
-  ENROLL_LOOKALIKE_GUARD: 0.50, // Skor ke orang lain di bawah nilai ini akan ditolak/diberi flag mirip
+  ENROLL_LOOKALIKE_GUARD: 0.48, // Skor ke orang lain di bawah nilai ini akan ditolak/diberi flag mirip
   MAX_SAMPLES_PER_SUBJECT: 12, // Batas maksimum sampel per orang
 
   // === Verifikasi & Single-Use Token ===

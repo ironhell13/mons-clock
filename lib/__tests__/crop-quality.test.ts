@@ -32,34 +32,34 @@ describe('Gate Kualitas Gambar Wajah (evaluateCropPixels)', () => {
 
     const res = evaluateCropPixels(img, W, H);
     expect(res.ok).toBe(true);
-    expect(res.metrics.brightness).toBeGreaterThanOrEqual(70);
-    expect(res.metrics.brightness).toBeLessThanOrEqual(190);
-    expect(res.metrics.lrRatio).toBeGreaterThanOrEqual(0.6);
-    expect(res.metrics.lrRatio).toBeLessThanOrEqual(1.6);
-    expect(res.metrics.sharpness).toBeGreaterThanOrEqual(60);
+    expect(res.metrics.brightness).toBeGreaterThanOrEqual(45);
+    expect(res.metrics.brightness).toBeLessThanOrEqual(230);
+    expect(res.metrics.lrRatio).toBeGreaterThanOrEqual(0.45);
+    expect(res.metrics.lrRatio).toBeLessThanOrEqual(2.2);
+    expect(res.metrics.sharpness).toBeGreaterThanOrEqual(25);
   });
 
-  it('harus menolak gambar yang terlalu gelap (brightness < 70)', () => {
-    const darkImg = createSyntheticImage(() => ({ r: 35, g: 35, b: 35 }));
+  it('harus menolak gambar yang terlalu gelap (brightness < 45)', () => {
+    const darkImg = createSyntheticImage(() => ({ r: 25, g: 25, b: 25 }));
     const res = evaluateCropPixels(darkImg, W, H);
     expect(res.ok).toBe(false);
     expect(res.reason).toContain('gelap');
   });
 
-  it('harus menolak gambar yang terlalu terang / silau (brightness > 190)', () => {
-    const brightImg = createSyntheticImage(() => ({ r: 215, g: 215, b: 215 }));
+  it('harus menolak gambar yang terlalu terang / silau (brightness > 230)', () => {
+    const brightImg = createSyntheticImage(() => ({ r: 245, g: 245, b: 245 }));
     const res = evaluateCropPixels(brightImg, W, H);
     expect(res.ok).toBe(false);
     expect(res.reason).toContain('silau');
   });
 
-  it('harus menolak cahaya tidak merata / backlight samping (rasio L/R di luar [0.6, 1.6])', () => {
+  it('harus menolak cahaya tidak merata / backlight samping (rasio L/R di luar [0.45, 2.2])', () => {
     // Sisi kiri sangat terang, sisi kanan sangat gelap
     const sideLightImg = createSyntheticImage((x) => {
       if (x < W / 2) {
-        return { r: 170, g: 170, b: 170 };
+        return { r: 200, g: 200, b: 200 };
       }
-      return { r: 75, g: 75, b: 75 };
+      return { r: 50, g: 50, b: 50 };
     });
 
     const res = evaluateCropPixels(sideLightImg, W, H);
@@ -67,7 +67,7 @@ describe('Gate Kualitas Gambar Wajah (evaluateCropPixels)', () => {
     expect(res.reason).toContain('merata');
   });
 
-  it('harus menolak gambar buram tanpa tepi tajam (Laplacian variance < 60)', () => {
+  it('harus menolak gambar buram tanpa tepi tajam (Laplacian variance < 25)', () => {
     // Gradien sangat halus / warna seragam (ketajaman 0)
     const blurryImg = createSyntheticImage(() => ({ r: 120, g: 120, b: 120 }));
     const res = evaluateCropPixels(blurryImg, W, H);
@@ -76,17 +76,17 @@ describe('Gate Kualitas Gambar Wajah (evaluateCropPixels)', () => {
     expect(res.metrics.sharpness).toBe(0);
   });
 
-  it('harus menolak gambar dengan pixel jenuh (clipped pixels > 8%)', () => {
-    // 20% pixel jenuh > 250
+  it('harus menolak gambar dengan pixel jenuh (clipped pixels > 20%)', () => {
+    // 25% pixel jenuh > 250
     const clippedImg = createSyntheticImage((x, y) => {
-      const isClipped = y < H * 0.20;
+      const isClipped = y < H * 0.25;
       const v = isClipped ? 255 : 120;
       return { r: v, g: v, b: v };
     });
 
     const res = evaluateCropPixels(clippedImg, W, H);
     expect(res.ok).toBe(false);
-    expect(res.metrics.clippedPct).toBeGreaterThan(8);
+    expect(res.metrics.clippedPct).toBeGreaterThan(20);
   });
 });
 
