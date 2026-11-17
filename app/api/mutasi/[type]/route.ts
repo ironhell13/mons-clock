@@ -58,7 +58,7 @@ export async function GET(
   req: NextRequest,
   context: { params: Promise<{ type: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -105,7 +105,7 @@ export async function POST(
   req: NextRequest,
   context: { params: Promise<{ type: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -153,7 +153,7 @@ export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ type: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -204,7 +204,7 @@ export async function DELETE(
   req: NextRequest,
   context: { params: Promise<{ type: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }

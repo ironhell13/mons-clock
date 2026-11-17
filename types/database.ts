@@ -1,4 +1,4 @@
-export type UserRole = 'superadmin' | 'admin' | 'absen';
+export type UserRole = 'superadmin' | 'admin' | 'hrd' | 'absen';
 
 export type TripType = 'FLM' | 'RPL' | 'CIT';
 
@@ -32,6 +32,7 @@ export interface Employee {
 
 export interface Escort {
   id: string;
+  nig?: string | null;
   name: string;
   vendor: string;
   is_active: boolean;
@@ -133,9 +134,13 @@ export interface FaceTemplate {
   created_at: string;
 }
 
+export type CorrectionStatus = 'pending_hrd' | 'approved_hrd' | 'rejected_hrd';
+
 export interface Attendance {
   id: string;
-  employee_id: string;
+  employee_id: string | null;
+  escort_id?: string | null;
+  subject_type?: SubjectType;
   work_date: string;
   masuk_at: string | null;
   istirahat_at: string | null;
@@ -143,16 +148,29 @@ export interface Attendance {
   pulang_at: string | null;
   created_at: string;
   employee?: Pick<Employee, 'id' | 'name' | 'position' | 'employee_no'>;
+  escort?: Pick<Escort, 'id' | 'name' | 'vendor' | 'nig'>;
+  correction_status?: CorrectionStatus | null;
+  correction_by?: string | null;
+  correction_reason?: string | null;
+  correction_at?: string | null;
+  validated_by?: string | null;
+  validated_at?: string | null;
+  validation_notes?: string | null;
+  previous_data?: Record<string, unknown> | null;
 }
 
 export interface AttendanceEvent {
   id: string;
-  employee_id: string;
+  employee_id: string | null;
+  escort_id?: string | null;
+  subject_type?: SubjectType;
   attendance_id: string | null;
   event_type: AttendanceEventType;
   occurred_at: string;
   match_distance: number | null;
   created_at: string;
+  employee?: Pick<Employee, 'id' | 'name' | 'position' | 'employee_no'>;
+  escort?: Pick<Escort, 'id' | 'name' | 'vendor' | 'nig'>;
   verification_id?: string | null;
   second_subject_id?: string | null;
   second_distance?: number | null;

@@ -45,6 +45,7 @@ interface MasterRecord {
   position?: string;
   employee_no?: string;
   vendor?: string;
+  nig?: string | null;
   plate?: string;
   face_count?: number;
 }
@@ -78,6 +79,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
   const [positionVal, setPositionVal] = useState('');
   const [employeeNo, setEmployeeNo] = useState('');
   const [vendorVal, setVendorVal] = useState('');
+  const [nigVal, setNigVal] = useState('');
   const [plateVal, setPlateVal] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -135,7 +137,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
       if (statusFilter === 'active' && !item.is_active) return false;
       if (statusFilter === 'inactive' && item.is_active) return false;
       if (!q) return true;
-      return [item.name, item.position, item.employee_no, item.rfid_no, item.vendor, item.plate]
+      return [item.name, item.position, item.employee_no, item.rfid_no, item.vendor, item.nig, item.plate]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q));
     });
@@ -172,6 +174,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
     setPositionVal('');
     setEmployeeNo('');
     setVendorVal('');
+    setNigVal('');
     setPlateVal('');
     setFormError(null);
     setFormOpen(true);
@@ -184,6 +187,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
     setPositionVal(item.position ?? '');
     setEmployeeNo(item.employee_no ?? '');
     setVendorVal(item.vendor ?? '');
+    setNigVal(item.nig ?? '');
     setPlateVal(item.plate ?? '');
     setFormError(null);
     setFormOpen(true);
@@ -211,6 +215,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
       const parsed = escortSchema.safeParse({
         name: cleanText(nameVal),
         vendor: cleanText(vendorVal),
+        nig: nigVal ? cleanText(nigVal) : null,
         is_active: editingItem?.is_active ?? true,
       });
       if (!parsed.success) {
@@ -378,6 +383,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
       }
       if (entity === 'pengawal') {
         return {
+          NIG: item.nig ?? '',
           NAMA: item.name ?? '',
           VENDOR: item.vendor ?? '',
         };
@@ -540,6 +546,7 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
                   )}
                   {entity === 'pengawal' && (
                     <>
+                      <th className="px-4 py-3">{renderSortButton('nig', 'NIG')}</th>
                       <th className="px-4 py-3">{renderSortButton('name', 'Nama Pengawal')}</th>
                       <th className="px-4 py-3">{renderSortButton('vendor', 'Vendor')}</th>
                       <th className="px-4 py-3">Status Wajah</th>
@@ -596,6 +603,9 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
                     )}
                     {entity === 'pengawal' && (
                       <>
+                        <td className="px-4 py-3 font-mono text-xs font-semibold text-ink">
+                          {item.nig || '-'}
+                        </td>
                         <td className="px-4 py-3 font-semibold text-ink">{item.name}</td>
                         <td className="px-4 py-3">
                           <span className="inline-flex rounded-lg bg-primary-100 text-primary-700 px-2.5 py-0.5 text-xs font-bold">
@@ -757,6 +767,18 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
 
           {entity === 'pengawal' && (
             <>
+              <div>
+                <label className="block text-sm font-semibold text-ink mb-1">
+                  NIG (Nomor Induk Guard)
+                </label>
+                <input
+                  type="text"
+                  value={nigVal}
+                  onChange={(e) => setNigVal(e.target.value)}
+                  placeholder="Contoh: NIG-12345 (opsional)"
+                  className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
+                />
+              </div>
               <div>
                 <label className="block text-sm font-semibold text-ink mb-1">Nama Pengawal *</label>
                 <input

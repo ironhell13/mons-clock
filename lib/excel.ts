@@ -108,6 +108,7 @@ export async function parseMasterExcelFile(
     for (const r of rawRows) {
       const name = cleanText(String(r['NAMA'] ?? r['NAME'] ?? ''));
       const vendor = cleanText(String(r['VENDOR'] ?? ''));
+      const nig = cleanText(String(r['NIG'] ?? r['NOMOR INDUK'] ?? r['NO INDUK'] ?? ''));
       if (!name || !vendor) {
         invalidRows++;
         continue;
@@ -116,7 +117,7 @@ export async function parseMasterExcelFile(
       if (map.has(key)) {
         duplicatesRemoved++;
       } else {
-        map.set(key, { name, vendor });
+        map.set(key, { name, vendor, nig });
       }
     }
     return {

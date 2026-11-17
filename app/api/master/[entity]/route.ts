@@ -28,6 +28,7 @@ function validatePayload(entity: string, body: Record<string, unknown>) {
       return escortSchema.safeParse({
         name: cleanText(String(body.name ?? '')),
         vendor: cleanText(String(body.vendor ?? '')),
+        nig: body.nig ? cleanText(String(body.nig)) : null,
         is_active: body.is_active ?? true,
       });
     case 'area':
@@ -81,7 +82,7 @@ export async function GET(
   _req: NextRequest,
   context: { params: Promise<{ entity: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -170,7 +171,7 @@ export async function POST(
   req: NextRequest,
   context: { params: Promise<{ entity: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -227,7 +228,7 @@ export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ entity: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -343,7 +344,7 @@ export async function DELETE(
   req: NextRequest,
   context: { params: Promise<{ entity: string }> }
 ) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }

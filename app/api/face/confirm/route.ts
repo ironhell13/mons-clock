@@ -12,7 +12,7 @@ const confirmSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
+  const auth = await requireApiRole(['absen', 'admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -89,21 +89,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 4. Verifikasi Faktor Kedua (No ID / RFID) jika subjek adalah Karyawan
-  if (verification.subject_type === 'employee') {
-    const { data: emp, error: empErr } = await adminClient
-      .from('employees')
-      .select('id, name, position, employee_no, rfid_no, is_active')
-      .eq('id', chosen_subject_id)
-      .maybeSingle();
+  // 4. Verifikasi Identitas Kandidat (Karyawan atau Pengawal)
+  const { data: emp } = await adminClient
+    .from('employees')
+    .select('id, name, position, employee_no, rfid_no, is_active')
+    .eq('id', chosen_subject_id)
+    .maybeSingle();
 
-    if (empErr || !emp || !emp.is_active) {
-      return NextResponse.json(
-        { error: 'Karyawan tidak ditemukan atau nonaktif.' },
-        { status: 404 }
-      );
-    }
-
+  if (emp && emp.is_active) {
     const cleanedFactor = (factor ?? '').trim().toLowerCase();
     const empNo = emp.employee_no.trim().toLowerCase();
     const last4 = empNo.length >= 4 ? empNo.slice(-4) : empNo;
@@ -142,11 +135,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Berhasil verifikasi faktor kedua
+    // Berhasil verifikasi faktor kedua karyawan
     await adminClient
       .from('face_verifications')
       .update({
         subject_id: emp.id,
+        subject_type: 'employee',
         confirmed_method: matchesRfid ? 'rfid' : 'no_id_last4',
       })
       .eq('id', verification_id);
@@ -159,20 +153,21 @@ export async function POST(req: NextRequest) {
         name: emp.name,
         subtitle: emp.position,
         code: emp.employee_no,
+        subject_type: 'employee',
       },
     });
   }
 
-  // 5. Untuk Pengawal (Escort): Tidak memiliki No ID karyawan, pemilihan nama sudah memadai
+  // 5. Untuk Pengawal (Escort)
   const { data: esc, error: escErr } = await adminClient
     .from('escorts')
-    .select('id, name, vendor, is_active')
+    .select('id, name, vendor, nig, is_active')
     .eq('id', chosen_subject_id)
     .maybeSingle();
 
   if (escErr || !esc || !esc.is_active) {
     return NextResponse.json(
-      { error: 'Pengawal tidak ditemukan atau nonaktif.' },
+      { error: 'Subjek tidak ditemukan atau nonaktif.' },
       { status: 404 }
     );
   }
@@ -181,6 +176,7 @@ export async function POST(req: NextRequest) {
     .from('face_verifications')
     .update({
       subject_id: esc.id,
+      subject_type: 'escort',
       confirmed_method: 'manual_select',
     })
     .eq('id', verification_id);
@@ -192,6 +188,8 @@ export async function POST(req: NextRequest) {
       id: esc.id,
       name: esc.name,
       subtitle: esc.vendor,
+      code: esc.nig ?? undefined,
+      subject_type: 'escort',
     },
   });
 }

@@ -6,7 +6,7 @@ export default async function AdminLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const { profile } = await requirePageRole(['admin', 'superadmin']);
+  const { profile } = await requirePageRole(['admin', 'hrd', 'superadmin']);
   return <AdminShell profile={profile}>{children}</AdminShell>;
 }
 

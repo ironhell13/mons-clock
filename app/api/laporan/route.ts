@@ -6,7 +6,7 @@ import { fromWibDatetimeLocal, getWibDateString } from '@/lib/time';
 import { normalizePlate } from '@/lib/validators';
 
 export async function GET(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -26,29 +26,42 @@ export async function GET(req: NextRequest) {
       .select(`
         id,
         employee_id,
+        escort_id,
+        subject_type,
         work_date,
         masuk_at,
         istirahat_at,
         istirahat_kembali_at,
         pulang_at,
+        correction_status,
+        correction_by,
+        correction_reason,
+        correction_at,
+        validated_by,
+        validated_at,
+        validation_notes,
         created_at,
-        employee:employees(id, name, position, employee_no)
+        employee:employees(id, name, position, employee_no),
+        escort:escorts(id, name, vendor, nig)
       `)
       .order('work_date', { ascending: false })
       .order('masuk_at', { ascending: false });
 
     if (from) query = query.gte('work_date', from);
     if (to) query = query.lte('work_date', to);
-    if (employeeId) query = query.eq('employee_id', employeeId);
+    if (employeeId) {
+      query = query.or(`employee_id.eq.${employeeId},escort_id.eq.${employeeId}`);
+    }
 
-    const [attRes, empRes, auditRes] = await Promise.all([
+    const [attRes, empRes, escRes, auditRes] = await Promise.all([
       query,
       supabase.from('employees').select('id, name, position, employee_no').order('name'),
+      supabase.from('escorts').select('id, name, vendor, nig').order('name'),
       supabase
         .from('audit_logs')
         .select('id, user_id, action, table_name, record_id, reason, payload, created_at')
         .eq('table_name', 'attendance')
-        .in('action', ['admin_correction', 'admin_delete'])
+        .in('action', ['admin_correction', 'admin_delete', 'hrd_approve', 'hrd_reject_rollback', 'hrd_reject_delete_new'])
         .order('created_at', { ascending: false })
         .limit(40),
     ]);
@@ -72,6 +85,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       items: attRes.data ?? [],
       employees: empRes.data ?? [],
+      escorts: escRes.data ?? [],
+      currentUserRole: auth.session.profile.role,
+      currentUserId: auth.session.userId,
       auditLogs: (auditRes.data ?? []).map((log) => ({
         ...log,
         actor_name: log.user_id ? profileMap.get(log.user_id) ?? 'Admin' : 'Sistem',
@@ -169,7 +185,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -189,7 +205,10 @@ export async function PATCH(req: NextRequest) {
 
   if (target === 'attendance') {
     const id = typeof body.id === 'string' ? body.id : '';
-    const employeeId = typeof body.employee_id === 'string' ? body.employee_id : '';
+    const subjectType = body.subject_type === 'escort' ? 'escort' : 'employee';
+    const isEscort = subjectType === 'escort';
+    const employeeId = isEscort ? null : (typeof body.employee_id === 'string' ? body.employee_id : null);
+    const escortId = isEscort ? (typeof body.escort_id === 'string' ? body.escort_id : null) : null;
     const workDate = typeof body.work_date === 'string' ? body.work_date : '';
     const masukIso = fromWibDatetimeLocal(body.masuk_local as string | null);
     const istirahatIso = fromWibDatetimeLocal(body.istirahat_local as string | null);
@@ -205,23 +224,55 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
+    const nowIso = new Date().toISOString();
+    const isSupervisor = auth.session.profile.role === 'hrd' || auth.session.profile.role === 'superadmin';
+
+    const correctionFields = isSupervisor
+      ? {
+          correction_status: 'approved_hrd',
+          correction_by: auth.session.userId,
+          correction_reason: reason,
+          correction_at: nowIso,
+          validated_by: auth.session.userId,
+          validated_at: nowIso,
+          validation_notes: 'Disetujui otomatis oleh supervisor/superadmin',
+        }
+      : {
+          correction_status: 'pending_hrd',
+          correction_by: auth.session.userId,
+          correction_reason: reason,
+          correction_at: nowIso,
+          validated_by: null,
+          validated_at: null,
+          validation_notes: null,
+        };
+
     if (id === 'NEW') {
-      if (!employeeId || !workDate) {
-        return NextResponse.json({ error: 'Karyawan dan tanggal kerja wajib diisi.' }, { status: 400 });
+      if ((!employeeId && !escortId) || !workDate) {
+        return NextResponse.json(
+          { error: `${isEscort ? 'Pengawal' : 'Karyawan'} dan tanggal kerja wajib diisi.` },
+          { status: 400 }
+        );
       }
       const effectiveDate = masukIso ? getWibDateString(masukIso) : workDate;
+      const onConflict = isEscort ? 'escort_id,work_date' : 'employee_id,work_date';
+
       const { data: inserted, error: insErr } = await supabase
         .from('attendance')
         .upsert(
           {
+            subject_type: subjectType,
             employee_id: employeeId,
+            escort_id: escortId,
             work_date: effectiveDate,
             masuk_at: masukIso,
             istirahat_at: istirahatIso,
             istirahat_kembali_at: istirahatKembaliIso,
             pulang_at: pulangIso,
+            previous_data: { is_new: true },
+            ...correctionFields,
           },
-          { onConflict: 'employee_id,work_date' }
+          { onConflict }
         )
         .select('*')
         .single();
@@ -232,7 +283,7 @@ export async function PATCH(req: NextRequest) {
 
       await supabase.from('audit_logs').insert({
         user_id: auth.session.userId,
-        action: 'admin_correction',
+        action: isSupervisor ? 'supervisor_correction' : 'admin_correction',
         table_name: 'attendance',
         record_id: inserted.id,
         reason,
@@ -259,6 +310,8 @@ export async function PATCH(req: NextRequest) {
         istirahat_at: istirahatIso,
         istirahat_kembali_at: istirahatKembaliIso,
         pulang_at: pulangIso,
+        previous_data: beforeRow,
+        ...correctionFields,
       })
       .eq('id', id)
       .select('*')
@@ -270,7 +323,7 @@ export async function PATCH(req: NextRequest) {
 
     await supabase.from('audit_logs').insert({
       user_id: auth.session.userId,
-      action: 'admin_correction',
+      action: isSupervisor ? 'supervisor_correction' : 'admin_correction',
       table_name: 'attendance',
       record_id: id,
       reason,
@@ -363,7 +416,7 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }

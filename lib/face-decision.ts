@@ -1,7 +1,9 @@
 import { FACE_CONFIG, type FaceConfig } from './face-config';
+import type { SubjectType } from '@/types/database';
 
 export interface CandidateMatch {
   subject_id: string;
+  subject_type?: SubjectType;
   n_samples: number;
   d_min: number;
   d_top2: number;

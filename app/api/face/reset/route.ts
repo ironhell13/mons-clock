@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { resetFaceTemplatesSchema } from '@/lib/validators';
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }

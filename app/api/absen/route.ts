@@ -12,7 +12,7 @@ import {
 } from '@/lib/time';
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
+  const auth = await requireApiRole(['absen', 'admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -42,8 +42,11 @@ export async function POST(req: NextRequest) {
   }
 
   const verification = verifRes.verification;
-  const employee = verifRes.subject;
-  const employee_id = employee.id;
+  const subject = verifRes.subject;
+  const isEscort = verification.subject_type === 'escort';
+  const employee_id = isEscort ? null : subject.id;
+  const escort_id = isEscort ? subject.id : null;
+  const subject_type: 'employee' | 'escort' = isEscort ? 'escort' : 'employee';
 
   // Selalu gunakan waktu server (UTC) agar jam perangkat tidak bisa dimanipulasi
   const now = new Date();
@@ -52,17 +55,20 @@ export async function POST(req: NextRequest) {
   const twentyFourHoursAgoIso = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
 
   // 2. Cek status absensi aktif di database
+  const filterCol = isEscort ? 'escort_id' : 'employee_id';
+  const filterVal = isEscort ? escort_id : employee_id;
+
   const attendanceLookup = await (mode === 'masuk'
     ? adminClient
         .from('attendance')
-        .select('id, employee_id, work_date, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
-        .eq('employee_id', employee_id)
+        .select('id, employee_id, escort_id, subject_type, work_date, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
+        .eq(filterCol, filterVal)
         .eq('work_date', todayWib)
         .maybeSingle()
     : adminClient
         .from('attendance')
-        .select('id, employee_id, work_date, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
-        .eq('employee_id', employee_id)
+        .select('id, employee_id, escort_id, subject_type, work_date, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
+        .eq(filterCol, filterVal)
         .not('masuk_at', 'is', null)
         .is('pulang_at', null)
         .gte('masuk_at', twentyFourHoursAgoIso)
@@ -85,21 +91,25 @@ export async function POST(req: NextRequest) {
         {
           duplicate: true,
           error: `Sudah absen masuk pukul ${formatWibTimeShort(existingToday.masuk_at)} WIB`,
-          employeeName: employee.name,
+          employeeName: subject.name,
         },
         { status: 409 }
       );
     }
+
+    const onConflict = isEscort ? 'escort_id,work_date' : 'employee_id,work_date';
 
     const { data: upserted, error: upsertErr } = await adminClient
       .from('attendance')
       .upsert(
         {
           employee_id,
+          escort_id,
+          subject_type,
           work_date: todayWib,
           masuk_at: nowIso,
         },
-        { onConflict: 'employee_id,work_date' }
+        { onConflict }
       )
       .select('id')
       .single();
@@ -112,6 +122,8 @@ export async function POST(req: NextRequest) {
       .from('attendance_events')
       .insert({
         employee_id,
+        escort_id,
+        subject_type,
         attendance_id: upserted.id,
         event_type: 'masuk',
         occurred_at: nowIso,
@@ -131,7 +143,7 @@ export async function POST(req: NextRequest) {
       success: true,
       event_id: insertedEvent?.id,
       mode,
-      employee: { id: employee.id, name: employee.name, position: employee.subtitle },
+      employee: { id: subject.id, name: subject.name, position: subject.subtitle, subject_type },
       occurredAt: nowIso,
       formattedDate: formatWibDateFull(now),
       formattedTime: formatWibTimeSeconds(now),
@@ -152,7 +164,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error: 'Belum ada absen Masuk yang aktif. Silakan absen Masuk terlebih dahulu.',
-          employeeName: employee.name,
+          employeeName: subject.name,
         },
         { status: 400 }
       );
@@ -174,6 +186,8 @@ export async function POST(req: NextRequest) {
         .from('attendance_events')
         .insert({
           employee_id,
+          escort_id,
+          subject_type,
           attendance_id: activeShift.id,
           event_type: 'istirahat',
           occurred_at: nowIso,
@@ -196,7 +210,7 @@ export async function POST(req: NextRequest) {
         action: 'mulai',
         title: 'Mulai Istirahat Berhasil',
         statusMessage: 'Selamat beristirahat',
-        employee: { id: employee.id, name: employee.name, position: employee.subtitle },
+        employee: { id: subject.id, name: subject.name, position: subject.subtitle, subject_type },
         occurredAt: nowIso,
         formattedDate: formatWibDateFull(now),
         formattedTime: formatWibTimeSeconds(now),
@@ -214,7 +228,7 @@ export async function POST(req: NextRequest) {
           {
             duplicate: true,
             error: `Baru saja absen Mulai Istirahat pukul ${formatWibTimeShort(activeShift.istirahat_at)} WIB. Mohon tunggu minimal 1 menit sebelum absen kembali.`,
-            employeeName: employee.name,
+            employeeName: subject.name,
           },
           { status: 409 }
         );
@@ -237,6 +251,8 @@ export async function POST(req: NextRequest) {
         .from('attendance_events')
         .insert({
           employee_id,
+          escort_id,
+          subject_type,
           attendance_id: activeShift.id,
           event_type: 'istirahat_kembali',
           occurred_at: nowIso,
@@ -262,7 +278,7 @@ export async function POST(req: NextRequest) {
         breakStartFormatted: `${formatWibTimeShort(activeShift.istirahat_at)} WIB`,
         durationMinutes: diffMinutes,
         durationLabel,
-        employee: { id: employee.id, name: employee.name, position: employee.subtitle },
+        employee: { id: subject.id, name: subject.name, position: subject.subtitle, subject_type },
         occurredAt: nowIso,
         formattedDate: formatWibDateFull(now),
         formattedTime: formatWibTimeSeconds(now),
@@ -278,7 +294,7 @@ export async function POST(req: NextRequest) {
       {
         duplicate: true,
         error: `Sudah menyelesaikan istirahat shift ini (Mulai ${formatWibTimeShort(activeShift.istirahat_at)} WIB s/d ${kembaliStr} WIB).`,
-        employeeName: employee.name,
+        employeeName: subject.name,
       },
       { status: 409 }
     );
@@ -295,7 +311,7 @@ export async function POST(req: NextRequest) {
     const { data: todayRow } = await adminClient
       .from('attendance')
       .select('pulang_at')
-      .eq('employee_id', employee_id)
+      .eq(filterCol, filterVal)
       .eq('work_date', todayWib)
       .maybeSingle();
 
@@ -304,7 +320,7 @@ export async function POST(req: NextRequest) {
         {
           duplicate: true,
           error: `Sudah absen pulang pukul ${formatWibTimeShort(todayRow.pulang_at)} WIB`,
-          employeeName: employee.name,
+          employeeName: subject.name,
         },
         { status: 409 }
       );
@@ -313,7 +329,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error: 'Belum ditemukan absen Masuk yang aktif (maksimal 24 jam terakhir). Silakan absen Masuk terlebih dahulu.',
-        employeeName: employee.name,
+        employeeName: subject.name,
       },
       { status: 400 }
     );
@@ -333,6 +349,8 @@ export async function POST(req: NextRequest) {
     .from('attendance_events')
     .insert({
       employee_id,
+      escort_id,
+      subject_type,
       attendance_id: openShift.id,
       event_type: 'pulang',
       occurred_at: nowIso,
@@ -352,7 +370,7 @@ export async function POST(req: NextRequest) {
     success: true,
     event_id: insertedEvent?.id,
     mode,
-    employee: { id: employee.id, name: employee.name, position: employee.subtitle },
+    employee: { id: subject.id, name: subject.name, position: subject.subtitle, subject_type },
     occurredAt: nowIso,
     formattedDate: formatWibDateFull(now),
     formattedTime: formatWibTimeSeconds(now),

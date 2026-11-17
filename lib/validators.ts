@@ -24,6 +24,7 @@ export const employeeSchema = z.object({
 });
 
 export const escortSchema = z.object({
+  nig: z.string().trim().optional().nullable().or(z.literal('')),
   name: z.string().trim().min(2, 'Nama pengawal minimal 2 karakter.'),
   vendor: z.string().trim().min(2, 'Nama vendor wajib diisi.'),
   is_active: z.boolean().optional().default(true),
@@ -240,12 +241,12 @@ export const createUserSchema = z.object({
   full_name: z.string().trim().min(2, 'Nama lengkap minimal 2 karakter.'),
   email: z.string().trim().email('Email tidak valid.'),
   password: z.string().min(6, 'Password minimal 6 karakter.'),
-  role: z.enum(['admin', 'absen']),
+  role: z.enum(['admin', 'hrd', 'absen']),
 });
 
 export const updateUserSchema = z.object({
   user_id: z.string().uuid(),
-  role: z.enum(['admin', 'absen', 'superadmin']).optional(),
+  role: z.enum(['admin', 'hrd', 'absen', 'superadmin']).optional(),
   is_active: z.boolean().optional(),
   new_password: z.string().min(6, 'Password baru minimal 6 karakter.').optional(),
 });

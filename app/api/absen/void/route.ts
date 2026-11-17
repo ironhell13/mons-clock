@@ -5,7 +5,7 @@ import { voidAttendanceSchema } from '@/lib/validators';
 import { getActiveFaceConfig } from '@/lib/face-config';
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
+  const auth = await requireApiRole(['absen', 'admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -58,11 +58,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 3. Pastikan merupakan event terbaru dari karyawan ini
+  // 3. Pastikan merupakan event terbaru dari karyawan/pengawal ini
+  const subjectField = eventRow.escort_id ? 'escort_id' : 'employee_id';
+  const subjectId = eventRow.escort_id || eventRow.employee_id;
   const { data: latestEvent } = await adminClient
     .from('attendance_events')
     .select('id')
-    .eq('employee_id', eventRow.employee_id)
+    .eq(subjectField, subjectId)
     .is('voided_at', null)
     .order('occurred_at', { ascending: false })
     .limit(1)

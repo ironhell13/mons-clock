@@ -31,28 +31,39 @@ export interface VerificationResultPayload {
 export async function matchFacesFallback(
   adminClient: SupabaseClient,
   query: number[],
-  subjectType: SubjectType
+  subjectType: SubjectType | 'all' | 'absen'
 ): Promise<{
   subject_id: string;
+  subject_type?: SubjectType;
   n_samples: number;
   d_min: number;
   d_top2: number;
   d_mean: number;
 }[]> {
-  const { data: templates, error } = await adminClient
+  let queryBuilder = adminClient
     .from('face_templates')
-    .select('id, subject_type, employee_id, escort_id, descriptor')
-    .eq('subject_type', subjectType);
+    .select('id, subject_type, employee_id, escort_id, descriptor');
+
+  if (subjectType !== 'all' && subjectType !== 'absen') {
+    queryBuilder = queryBuilder.eq('subject_type', subjectType);
+  }
+
+  const { data: templates, error } = await queryBuilder;
 
   if (error || !templates || templates.length === 0) {
     return [];
   }
 
   const grouped = new Map<string, number[]>();
+  const sidType = new Map<string, SubjectType>();
 
   for (const tpl of templates) {
     const sid = (tpl.employee_id || tpl.escort_id) as string;
     if (!sid || !Array.isArray(tpl.descriptor) || tpl.descriptor.length !== 128) continue;
+
+    if (tpl.subject_type) {
+      sidType.set(sid, tpl.subject_type as SubjectType);
+    }
 
     const dist = euclideanDistance(query, tpl.descriptor);
     const existing = grouped.get(sid) ?? [];
@@ -62,6 +73,7 @@ export async function matchFacesFallback(
 
   const results: {
     subject_id: string;
+    subject_type?: SubjectType;
     n_samples: number;
     d_min: number;
     d_top2: number;
@@ -78,6 +90,7 @@ export async function matchFacesFallback(
 
     results.push({
       subject_id: sid,
+      subject_type: sidType.get(sid),
       n_samples: n,
       d_min: dMin,
       d_top2: dTop2,
@@ -96,7 +109,7 @@ export async function matchFacesFallback(
 export async function matchFacesServer(
   adminClient: SupabaseClient,
   query: number[],
-  subjectType: SubjectType
+  subjectType: SubjectType | 'all' | 'absen'
 ) {
   try {
     // Format query vector untuk pgvector: '[0.123, -0.456, ...]'
@@ -109,6 +122,7 @@ export async function matchFacesServer(
     if (!error && Array.isArray(data)) {
       return data as {
         subject_id: string;
+        subject_type?: SubjectType;
         n_samples: number;
         d_min: number;
         d_top2: number;

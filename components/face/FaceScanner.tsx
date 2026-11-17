@@ -164,7 +164,7 @@ export function FaceScanner({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             purpose: normalizedPurpose,
-            subject_type: subjectType,
+            subject_type: normalizedPurpose === 'absen' ? 'all' : subjectType,
             descriptors: [descriptor],
           }),
         });
@@ -172,7 +172,7 @@ export function FaceScanner({
         const verifyJson = (await verifyRes.json()) as {
           status?: 'accepted' | 'confirm' | 'rejected' | 'retry';
           verification_id?: string;
-          subject?: { id: string; name: string; subtitle: string; code?: string };
+          subject?: { id: string; name: string; subtitle: string; code?: string; subject_type?: SubjectType };
           candidates?: ConfirmCandidate[];
           score?: number | null;
           margin?: number | null;
@@ -195,7 +195,7 @@ export function FaceScanner({
           setStatusMessage(`Terverifikasi: ${verifyJson.subject.name}`);
           await onResult({
             verification_id: verifyJson.verification_id,
-            subject_type: subjectType,
+            subject_type: verifyJson.subject.subject_type ?? subjectType,
             subject_id: verifyJson.subject.id,
             name: verifyJson.subject.name,
             subtitle: verifyJson.subject.subtitle,
@@ -624,7 +624,7 @@ export function FaceScanner({
           setStatusMessage(`Terverifikasi: ${confirmedSubject.name}`);
           await onResult({
             verification_id: confirmVerificationId,
-            subject_type: subjectType,
+            subject_type: confirmedSubject.subject_type ?? subjectType,
             subject_id: confirmedSubject.id,
             name: confirmedSubject.name,
             subtitle: confirmedSubject.subtitle,

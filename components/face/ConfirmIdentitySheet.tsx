@@ -16,7 +16,7 @@ interface ConfirmIdentitySheetProps {
   verificationId: string;
   subjectType: SubjectType;
   candidates: ConfirmCandidate[];
-  onConfirmed: (subject: { id: string; name: string; subtitle: string; code?: string }) => void;
+  onConfirmed: (subject: { id: string; name: string; subtitle: string; code?: string; subject_type?: SubjectType }) => void;
   onCancel: () => void;
 }
 

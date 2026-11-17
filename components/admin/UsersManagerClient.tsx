@@ -26,7 +26,7 @@ export function UsersManagerClient() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<'admin' | 'absen'>('admin');
+  const [role, setRole] = useState<'admin' | 'hrd' | 'absen'>('admin');
   const [saving, setSaving] = useState(false);
 
   // Reset password modal
@@ -226,6 +226,7 @@ export function UsersManagerClient() {
                             className="rounded-lg border border-border-sky bg-white px-2.5 py-1 text-xs font-bold text-ink focus:border-primary-600 focus:outline-none"
                           >
                             <option value="admin">admin</option>
+                            <option value="hrd">hrd</option>
                             <option value="absen">absen (tablet)</option>
                           </select>
                         )}
@@ -327,10 +328,11 @@ export function UsersManagerClient() {
             <label className="block text-sm font-semibold text-ink mb-1">Role Akses *</label>
             <select
               value={role}
-              onChange={(e) => setRole(e.target.value as 'admin' | 'absen')}
+              onChange={(e) => setRole(e.target.value as 'admin' | 'hrd' | 'absen')}
               className="w-full rounded-xl border border-border-sky px-3.5 py-2.5 text-sm focus:border-primary-600 focus:outline-none"
             >
               <option value="admin">admin — Dashboard Admin (PC)</option>
+              <option value="hrd">hrd — Supervisor / Verifikasi Koreksi</option>
               <option value="absen">absen — Dashboard Kiosk (Tablet)</option>
             </select>
           </div>

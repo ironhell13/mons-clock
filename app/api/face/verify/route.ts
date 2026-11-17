@@ -14,7 +14,7 @@ import type { FaceVerificationCandidate } from '@/types/database';
 
 const verifyRequestSchema = z.object({
   purpose: z.enum(['absen', 'trip_staff1', 'trip_staff2', 'trip_escort']),
-  subject_type: z.enum(['employee', 'escort']),
+  subject_type: z.enum(['employee', 'escort', 'all']).optional(),
   descriptors: z
     .array(
       z
@@ -25,7 +25,7 @@ const verifyRequestSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
+  const auth = await requireApiRole(['absen', 'admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -39,7 +39,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { purpose, subject_type, descriptors } = parsed.data;
+  const { purpose, descriptors } = parsed.data;
+  const requestedSubjectType = parsed.data.subject_type;
+  // Jika tujuan adalah absensi, cari di kedua tabel (karyawan & pengawal)
+  const searchSubjectType = purpose === 'absen' ? 'all' : (requestedSubjectType ?? 'employee');
+
   const config = getActiveFaceConfig();
   const adminClient = createAdminClient();
 
@@ -56,20 +60,25 @@ export async function POST(req: NextRequest) {
   const framesUsed = multiFrame.framesUsed;
 
   // 2. Query kandidat terbaik di database (lewat RPC match_faces atau fallback)
-  const [matches, lookalikeRes, subjectListRes] = await Promise.all([
-    matchFacesServer(adminClient, queryVector, subject_type),
-    adminClient
-      .from('face_lookalike_flags')
-      .select('subject_a, subject_b')
-      .eq('subject_type', subject_type),
-    subject_type === 'employee'
-      ? adminClient
+  const [matches, lookalikeRes, empListRes, escListRes] = await Promise.all([
+    matchFacesServer(adminClient, queryVector, searchSubjectType),
+    searchSubjectType === 'all'
+      ? adminClient.from('face_lookalike_flags').select('subject_a, subject_b')
+      : adminClient
+          .from('face_lookalike_flags')
+          .select('subject_a, subject_b')
+          .eq('subject_type', searchSubjectType),
+    searchSubjectType === 'escort'
+      ? Promise.resolve({ data: [] })
+      : adminClient
           .from('employees')
           .select('id, name, position, employee_no')
-          .eq('is_active', true)
+          .eq('is_active', true),
+    searchSubjectType === 'employee'
+      ? Promise.resolve({ data: [] })
       : adminClient
           .from('escorts')
-          .select('id, name, vendor')
+          .select('id, name, vendor, nig')
           .eq('is_active', true),
   ]);
 
@@ -80,19 +89,34 @@ export async function POST(req: NextRequest) {
 
   const subjectMap = new Map<
     string,
-    { name: string; subtitle: string; code?: string }
+    { name: string; subtitle: string; code?: string; subject_type: 'employee' | 'escort' }
   >();
-  for (const s of (subjectListRes.data ?? []) as {
+
+  for (const s of (empListRes.data ?? []) as {
     id: string;
     name: string;
     position?: string;
-    vendor?: string;
     employee_no?: string;
   }[]) {
     subjectMap.set(s.id, {
       name: s.name,
-      subtitle: s.position ?? s.vendor ?? '',
+      subtitle: s.position ?? '',
       code: s.employee_no,
+      subject_type: 'employee',
+    });
+  }
+
+  for (const s of (escListRes.data ?? []) as {
+    id: string;
+    name: string;
+    vendor?: string;
+    nig?: string;
+  }[]) {
+    subjectMap.set(s.id, {
+      name: s.name,
+      subtitle: s.vendor ?? '',
+      code: s.nig,
+      subject_type: 'escort',
     });
   }
 
@@ -103,6 +127,7 @@ export async function POST(req: NextRequest) {
       name: meta?.name ?? 'Tidak Dikenal',
       subtitle: meta?.subtitle ?? '',
       code: meta?.code,
+      subject_type: meta?.subject_type ?? (m.subject_type as 'employee' | 'escort' | undefined),
     };
   });
 
@@ -112,10 +137,13 @@ export async function POST(req: NextRequest) {
   // 4. Proses berdasarkan zona hasil keputusan
   if (decision.zone === 'accept' && decision.best) {
     const bestMeta = subjectMap.get(decision.best.subject_id);
+    const resolvedSubjectType =
+      bestMeta?.subject_type ?? (purpose === 'trip_escort' ? 'escort' : 'employee');
+
     const { verificationId } = await saveFaceVerification(adminClient, {
       kioskUserId: auth.session.userId,
       purpose,
-      subjectType: subject_type,
+      subjectType: resolvedSubjectType,
       subjectId: decision.best.subject_id,
       zone: 'accept',
       score: decision.score,
@@ -142,6 +170,7 @@ export async function POST(req: NextRequest) {
         name: bestMeta?.name ?? 'Tidak Dikenal',
         subtitle: bestMeta?.subtitle ?? '',
         code: bestMeta?.code,
+        subject_type: resolvedSubjectType,
       },
       score: decision.score,
       margin: decision.margin,
@@ -161,7 +190,7 @@ export async function POST(req: NextRequest) {
     const { verificationId } = await saveFaceVerification(adminClient, {
       kioskUserId: auth.session.userId,
       purpose,
-      subjectType: subject_type,
+      subjectType: requestedSubjectType === 'escort' ? 'escort' : 'employee',
       subjectId: null,
       zone: 'confirm',
       score: decision.score,

@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
-  const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
+  const auth = await requireApiRole(['absen', 'admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -25,9 +25,9 @@ export async function GET(req: NextRequest) {
       : Promise.resolve({ data: [] as { id: string; name: string; position: string; employee_no: string; is_active: boolean }[] }),
     wantEscort
       ? (includeInactive
-          ? supabase.from('escorts').select('id, name, vendor, is_active').order('name')
-          : supabase.from('escorts').select('id, name, vendor, is_active').eq('is_active', true).order('name'))
-      : Promise.resolve({ data: [] as { id: string; name: string; vendor: string; is_active: boolean }[] }),
+          ? supabase.from('escorts').select('id, name, vendor, nig, is_active').order('name')
+          : supabase.from('escorts').select('id, name, vendor, nig, is_active').eq('is_active', true).order('name'))
+      : Promise.resolve({ data: [] as { id: string; name: string; vendor: string; nig?: string | null; is_active: boolean }[] }),
     (() => {
       let q = supabase
         .from('face_templates')
@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
       subject_type: 'escort' as const,
       name: e.name,
       subtitle: e.vendor,
-      code: e.vendor,
+      code: e.nig || e.vendor,
       is_active: e.is_active,
       sample_count: countBySubject.get(`escort:${e.id}`) ?? 0,
     })),
@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }

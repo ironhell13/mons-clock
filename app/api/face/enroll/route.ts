@@ -7,7 +7,7 @@ import { matchFacesServer } from '@/lib/face-verify';
 import { isLookalikePair, type LookalikePair } from '@/lib/face-decision';
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
+  const auth = await requireApiRole(['absen', 'admin', 'hrd', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
