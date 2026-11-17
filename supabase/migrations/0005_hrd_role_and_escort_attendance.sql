@@ -53,6 +53,10 @@ alter table public.attendance_events
 create index if not exists idx_attendance_events_escort on public.attendance_events(escort_id);
 
 -- 5. Perbarui RPC match_faces agar mendukung pencocokan gabungan ('all'/'absen') untuk kiosk
+drop function if exists public.match_faces(vector, text);
+drop function if exists public.match_faces(public.vector, text);
+drop function if exists public.match_faces;
+
 create or replace function public.match_faces(q vector(128), p_subject_type text)
 returns table (
   subject_id uuid,
@@ -90,3 +94,4 @@ $$;
 
 revoke all on function public.match_faces(vector, text) from public, anon, authenticated;
 grant execute on function public.match_faces(vector, text) to service_role;
+
