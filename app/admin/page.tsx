@@ -1,7 +1,16 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { formatWibDateFull, formatWibDateTime, getWibDateString } from '@/lib/time';
-import { Car, ClipboardCheck, Coffee, LogOut, Truck, UserCheck, Wrench } from 'lucide-react';
+import {
+  Car,
+  ClipboardCheck,
+  Coffee,
+  LogOut,
+  ShieldAlert,
+  Truck,
+  UserCheck,
+  Wrench,
+} from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 
 export const dynamic = 'force-dynamic';
@@ -10,11 +19,15 @@ export default async function AdminSummaryPage() {
   const supabase = await createClient();
   const todayWib = getWibDateString();
 
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
   const [
     attendanceRes,
     openTripsRes,
     guestsRes,
     workshopRes,
+    confirm7dRes,
+    voided7dRes,
   ] = await Promise.all([
     supabase
       .from('attendance')
@@ -38,6 +51,16 @@ export default async function AdminSummaryPage() {
       .order('depart_at', { ascending: false }),
     supabase.from('guest_logs').select('id', { count: 'exact', head: true }).eq('log_date', todayWib),
     supabase.from('workshop_logs').select('id', { count: 'exact', head: true }).is('finish_date', null),
+    supabase
+      .from('attendance_events')
+      .select('*', { count: 'exact', head: true })
+      .eq('decision_zone', 'confirm')
+      .gte('created_at', sevenDaysAgo),
+    supabase
+      .from('attendance_events')
+      .select('*', { count: 'exact', head: true })
+      .not('voided_at', 'is', null)
+      .gte('created_at', sevenDaysAgo),
   ]);
 
   const attRows = (attendanceRes.data ?? []) as unknown as {
@@ -66,6 +89,8 @@ export default async function AdminSummaryPage() {
   }[];
   const guestTodayCount = guestsRes.count ?? 0;
   const inWorkshopCount = workshopRes.count ?? 0;
+  const confirm7dCount = confirm7dRes.count ?? 0;
+  const voided7dCount = voided7dRes.count ?? 0;
 
   const statCards = [
     {
@@ -118,6 +143,42 @@ export default async function AdminSummaryPage() {
         <div>
           <h1 className="text-2xl font-extrabold text-ink">Ringkasan Operasional</h1>
           <p className="text-sm text-ink-muted mt-0.5">{formatWibDateFull(new Date())}</p>
+        </div>
+      </div>
+
+      {/* Kartu Ringkasan Review Biometrik Wajah (7 Hari Terakhir) */}
+      <div className="rounded-2xl bg-gradient-to-r from-amber-50/80 via-surface to-primary-50/80 border border-amber-200/90 p-5 shadow-soft flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-start gap-3.5">
+          <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-soft">
+            <ShieldAlert className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold text-ink flex items-center gap-2">
+              Review Biometrik & Keamanan Wajah
+              <span className="text-[10px] font-semibold text-amber-800 bg-amber-100/90 px-2 py-0.5 rounded-full border border-amber-200">
+                7 Hari Terakhir
+              </span>
+            </h2>
+            <p className="text-xs text-ink-muted mt-1 leading-relaxed">
+              Tercatat <strong className="text-amber-900">{confirm7dCount} verifikasi zona konfirmasi</strong> (butuh verifikasi 2nd factor) dan{' '}
+              <strong className="text-rose-700">{voided7dCount} absensi dibatalkan</strong> oleh karyawan (&ldquo;Bukan saya&rdquo;).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <Link
+            href="/admin/wajah/review"
+            className="rounded-xl bg-surface hover:bg-page border border-border-sky px-3.5 py-2 text-xs font-bold text-ink shadow-soft transition"
+          >
+            Review Absen
+          </Link>
+          <Link
+            href="/admin/wajah/audit"
+            className="rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-3.5 py-2 text-xs font-bold shadow-soft transition"
+          >
+            Audit Kemiripan
+          </Link>
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { ensureFaceModelsLoaded, getCachedFaceTemplates } from '@/lib/face';
+import { ensureFaceModelsLoaded } from '@/lib/face';
 import { getFaceLandmarker } from '@/lib/mediapipe';
 
 export function AbsenPreloader() {
@@ -10,11 +10,10 @@ export function AbsenPreloader() {
 
     const timer = setTimeout(() => {
       if (cancelled) return;
+      // Memanaskan model MediaPipe dan face-api di background tanpa mengunduh data vektor biometrik
       Promise.allSettled([
         getFaceLandmarker(),
         ensureFaceModelsLoaded(),
-        getCachedFaceTemplates('employee'),
-        getCachedFaceTemplates('escort'),
       ]);
     }, 150);
 
@@ -26,4 +25,3 @@ export function AbsenPreloader() {
 
   return null;
 }
-

@@ -14,3 +14,4 @@ alter table public.attendance_events
 
 comment on column public.attendance.istirahat_at is 'Jam mulai istirahat (WIB / timestamptz)';
 comment on column public.attendance.istirahat_kembali_at is 'Jam kembali/selesai istirahat (WIB / timestamptz)';
+

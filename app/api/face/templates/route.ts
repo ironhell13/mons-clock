@@ -2,7 +2,6 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { requireApiRole } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import type { SubjectType } from '@/types/database';
 
 export async function GET(req: NextRequest) {
   const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
@@ -32,7 +31,7 @@ export async function GET(req: NextRequest) {
     (() => {
       let q = supabase
         .from('face_templates')
-        .select('id, subject_type, employee_id, escort_id, descriptor, sample_label, created_at');
+        .select('id, subject_type, employee_id, escort_id, sample_label, created_at');
       if (subjectTypeParam === 'employee' || subjectTypeParam === 'escort') {
         q = q.eq('subject_type', subjectTypeParam);
       }
@@ -44,47 +43,19 @@ export async function GET(req: NextRequest) {
   const escorts = escRes.data ?? [];
   const rawTemplates = tplRes.data ?? [];
 
-  const empMap = new Map(employees.map((e) => [e.id, e]));
-  const escMap = new Map(escorts.map((e) => [e.id, e]));
-
   const countBySubject = new Map<string, number>();
-  const templates: {
-    id: string;
-    subject_type: SubjectType;
-    subject_id: string;
-    name: string;
-    subtitle: string;
-    descriptor: number[];
-    sample_label: string;
-  }[] = [];
 
   for (const row of rawTemplates) {
     if (row.subject_type === 'employee' && row.employee_id) {
-      const emp = empMap.get(row.employee_id);
-      if (!emp) continue;
-      countBySubject.set(`employee:${emp.id}`, (countBySubject.get(`employee:${emp.id}`) ?? 0) + 1);
-      templates.push({
-        id: row.id,
-        subject_type: 'employee',
-        subject_id: emp.id,
-        name: emp.name,
-        subtitle: emp.position,
-        descriptor: row.descriptor,
-        sample_label: row.sample_label,
-      });
+      countBySubject.set(
+        `employee:${row.employee_id}`,
+        (countBySubject.get(`employee:${row.employee_id}`) ?? 0) + 1
+      );
     } else if (row.subject_type === 'escort' && row.escort_id) {
-      const esc = escMap.get(row.escort_id);
-      if (!esc) continue;
-      countBySubject.set(`escort:${esc.id}`, (countBySubject.get(`escort:${esc.id}`) ?? 0) + 1);
-      templates.push({
-        id: row.id,
-        subject_type: 'escort',
-        subject_id: esc.id,
-        name: esc.name,
-        subtitle: esc.vendor,
-        descriptor: row.descriptor,
-        sample_label: row.sample_label,
-      });
+      countBySubject.set(
+        `escort:${row.escort_id}`,
+        (countBySubject.get(`escort:${row.escort_id}`) ?? 0) + 1
+      );
     }
   }
 
@@ -109,7 +80,8 @@ export async function GET(req: NextRequest) {
     })),
   ];
 
-  return NextResponse.json({ templates, subjects });
+  // Demi keamanan biometrik, vektor numerik wajah tidak lagi dikirim ke perangkat client.
+  return NextResponse.json({ templates: [], subjects });
 }
 
 export async function DELETE(req: NextRequest) {

@@ -107,7 +107,72 @@ SEED_SUPERADMIN_PASSWORD=PasswordKuat123!
    - Ketuk menu **⋮** di pojok kanan atas Chrome → pilih **Add to Home Screen** (*Tambahkan ke Layar Utama*) → **Install / Tambah**.
    - Buka MonsClock dari ikon shortcut di layar utama agar tampil bersih tanpa address bar browser.
 5. Atur perangkat tablet untuk standby di pos security:
-   - Setel orientasi layar ke **Landscape** (kunci rotasi ke landscape).
+   - Setel orientasi layar ke **Portrait** (kunci rotasi ke portrait agar pandangan wajah tegak dan frame seimbang).
    - Nonaktifkan auto-lock / ubah **Screen Timeout** ke maksimal atau gunakan mode **Always On / Kiosk** selama tersambung daya.
    - Pastikan pencahayaan di area pos security cukup terang dan tidak membelakangi lampu agar deteksi wajah cepat dan akurat.
+
+---
+
+## 7. Prosedur Pengujian Manual & Verifikasi Keamanan Wajah (Testing Script)
+
+Untuk menguji dan memastikan masalah salah kenali orang sudah terselesaikan sepenuhnya:
+
+### Langkah 1: Eksekusi Migrasi Database
+Buka **Supabase Dashboard** -> **SQL Editor**, salin dan jalankan isi file `supabase/migrations/0004_face_security.sql`.
+Migration ini mengaktifkan ekstensi `vector`, tabel `face_verifications`, kolom audit `attendance_events`, tabel `face_lookalike_flags`, dan RPC `match_faces`.
+
+### Langkah 2: Reset Template Lama
+1. Login sebagai **Admin** di `/admin/wajah`.
+2. Klik tombol merah **"Reset Semua Template Wajah"**, ketik `RESET` untuk konfirmasi. Seluruh template biometrik versi lama akan dibersihkan.
+
+### Langkah 3: Pendaftaran Wajah v2 (5 Pose)
+1. Daftarkan minimal 10 orang karyawan/pengawal (termasuk 2 orang yang sebelumnya pernah tertukar namanya).
+2. Ikuti 5 tahapan pose:
+   - Pose 1: **Lurus** (frontal)
+   - Pose 2: **Sedikit Kiri** (~15°)
+   - Pose 3: **Sedikit Kanan** (~15°)
+   - Pose 4: **Mendongak** (sedikit ke atas)
+   - Pose 5: **Menunduk** (sedikit ke bawah)
+3. Sistem otomatis merekam rata-rata 3 frame lolos kualitas per pose dan memverifikasi konsistensi internal sebelum disimpan ke server.
+
+### Langkah 4: Jalankan Audit Kemiripan
+1. Buka menu **Audit Kemiripan** (`/admin/wajah/audit`).
+2. Klik **"Jalankan Audit"**.
+3. Perhatikan nilai **Jarak Terkecil Antar-Wajah**:
+   - Jika ada pasangan dengan jarak $< 0.46$, klik tombol **"Tandai Wajah Mirip"**.
+   - Pasangan yang ditandai wajah mirip dijamin **100% tidak akan pernah langsung ACCEPT atas nama orang lain**, melainkan selalu memunculkan sheet konfirmasi identitas + 4 digit No ID.
+
+### Langkah 5: Pengujian Scan di Tablet Pos Security
+1. Lakukan scan absen pada kondisi normal:
+   - Wajah yang jelas dan memiliki margin aman ($\ge 0.10$) akan langsung **ACCEPT** dalam $\le 2$ detik.
+2. Lakukan scan pada dua orang yang memiliki kemiripan wajah:
+   - Sistem akan memicu **Zona Konfirmasi** (`CONFIRM`).
+   - Tablet menampilkan sheet pilihan nama kandidat (urutan diacak).
+   - Setelah nama dipilih, tablet meminta input **4 karakter terakhir No ID** melalui keypad numerik besar ramah sentuhan.
+   - Jika salah 3 kali berturut-turut, verifikasi terkunci dan dicatat di `audit_logs`.
+3. Uji tombol pembatalan mandiri:
+   - Pada pop-up sukses absensi (tampil selama 8 detik), klik tombol **"Bukan saya? Batalkan"**.
+   - Konfirmasi pembatalan. Status kehadiran otomatis kembali ke kondisi sebelum scan.
+
+### Langkah 6: Monitoring & Koreksi Admin
+1. Buka menu **Review Absensi** (`/admin/wajah/review`).
+2. Tinjau event yang masuk zona `confirm` atau yang dibatalkan mandiri (`voided`).
+3. Jika terdapat absensi yang salah orang, klik tombol **"Koreksi"** untuk memindahkan jam absen ke karyawan yang sebenarnya dengan alasan wajib tercatat di audit log.
+
+---
+
+## 8. Proposal Fase 8 (Modular Face Embedder ArcFace / MobileFaceNet)
+
+Aplikasi telah dilengkapi antarmuka modular `FaceEmbedder` pada `lib/face.ts`:
+
+```ts
+export interface FaceEmbedder {
+  readonly dim: number;
+  readonly name: string;
+  extract(canvas: HTMLCanvasElement): Promise<number[] | null>;
+}
+```
+
+Bila hasil audit di lapangan (`/admin/wajah/audit`) menunjukkan terlalu banyak pasangan rawan akibat keterbatasan model `faceRecognitionNet` (dlib ResNet era 2017), aplikasi dapat beralih ke model modern **MobileFaceNet / ArcFace (512-dimensi)** menggunakan runtime WebAssembly `onnxruntime-web` yang sangat ringan untuk tablet tanpa perlu merombak logika server maupun antarmuka aplikasi.
+
 

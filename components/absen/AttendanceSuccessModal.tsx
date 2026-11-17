@@ -13,6 +13,8 @@ interface SuccessPopupProps {
   timeLabel: string;
   extraRows?: { label: string; value: string }[];
   onClose: () => void;
+  onVoid?: () => void;
+  isVoiding?: boolean;
   autoCloseSeconds?: number;
 }
 
@@ -25,7 +27,9 @@ export function AttendanceSuccessModal({
   timeLabel,
   extraRows,
   onClose,
-  autoCloseSeconds = 4,
+  onVoid,
+  isVoiding = false,
+  autoCloseSeconds = 8,
 }: SuccessPopupProps) {
   const [remaining, setRemaining] = useState(autoCloseSeconds);
 
@@ -110,6 +114,17 @@ export function AttendanceSuccessModal({
           >
             Selesai ({remaining}d)
           </button>
+
+          {onVoid && (
+            <button
+              type="button"
+              disabled={isVoiding}
+              onClick={onVoid}
+              className="w-full text-xs font-bold text-danger hover:underline py-2 text-center transition"
+            >
+              {isVoiding ? 'Membatalkan absensi...' : 'Bukan nama saya? Batalkan absensi ini'}
+            </button>
+          )}
         </div>
       </motion.div>
     </div>

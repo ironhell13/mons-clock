@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { TripType } from '@/types/database';
-import type { FaceMatchSuccess } from '@/lib/face';
+import type { FaceScanSuccessPayload } from '@/components/face/FaceScanner';
 import { DynamicFaceScanner } from '@/components/face/DynamicFaceWidgets';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { Modal } from '@/components/ui/Modal';
@@ -79,6 +79,9 @@ export default function AbsenTripPage({
   const [kmEnd, setKmEnd] = useState('');
 
   // Mode Keluar fields
+  const [staff1VerifId, setStaff1VerifId] = useState('');
+  const [staff2VerifId, setStaff2VerifId] = useState('');
+  const [escortVerifId, setEscortVerifId] = useState('');
   const [staff2, setStaff2] = useState<{ id: string; name: string; position: string } | null>(null);
   const [escort, setEscort] = useState<{ id: string; name: string; vendor: string } | null>(null);
   const [plate, setPlate] = useState('');
@@ -100,9 +103,10 @@ export default function AbsenTripPage({
   } | null>(null);
 
   const handleFirstScan = useCallback(
-    async (match: FaceMatchSuccess) => {
+    async (match: FaceScanSuccessPayload) => {
       if (loadingCtx || ctx) return;
       setLoadingCtx(true);
+      setStaff1VerifId(match.verification_id);
       try {
         const res = await fetch(
           `/api/trips/context?trip_type=${tripType}&employee_id=${match.subject_id}`,
@@ -138,12 +142,13 @@ export default function AbsenTripPage({
   );
 
   const handleSubScanResult = useCallback(
-    (match: FaceMatchSuccess) => {
+    (match: FaceScanSuccessPayload) => {
       if (subScanMode === 'staff2') {
         if (ctx && match.subject_id === ctx.employee.id) {
           toast.error('Staff 2 tidak boleh sama dengan Staff 1.');
           return;
         }
+        setStaff2VerifId(match.verification_id);
         setStaff2({
           id: match.subject_id,
           name: match.name,
@@ -152,6 +157,7 @@ export default function AbsenTripPage({
         toast.success(`Staff 2 terpilih: ${match.name}`);
         setSubScanMode(null);
       } else if (subScanMode === 'escort') {
+        setEscortVerifId(match.verification_id);
         setEscort({
           id: match.subject_id,
           name: match.name,
@@ -191,6 +197,9 @@ export default function AbsenTripPage({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trip_type: tripType,
+          staff1_verification_id: staff1VerifId || undefined,
+          staff2_verification_id: staff2VerifId || undefined,
+          escort_verification_id: escortVerifId || undefined,
           staff1_id: ctx.employee.id,
           staff2_id: staff2?.id ?? null,
           escort_id: escort?.id ?? null,
@@ -250,6 +259,7 @@ export default function AbsenTripPage({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trip_id: selectedOpenTrip.id,
+          verification_id: staff1VerifId || undefined,
           scanned_employee_id: ctx.employee.id,
           km_end: kmNum,
           scanToken: ctx.scanToken,

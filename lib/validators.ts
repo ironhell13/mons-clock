@@ -151,15 +151,25 @@ export const goodsLogSchema = z.object({
 });
 
 export const attendanceScanSchema = z.object({
-  employee_id: z.string().uuid('ID karyawan tidak valid.'),
+  verification_id: z.string().uuid('ID verifikasi wajah tidak valid.'),
   mode: z.enum(['masuk', 'istirahat', 'istirahat_kembali', 'pulang']),
-  match_distance: z.number().min(0).max(2),
+  // Kolom warisan (diabaikan oleh server demi keamanan identitas)
+  employee_id: z.string().uuid().optional(),
+  match_distance: z.number().optional(),
+});
+
+export const voidAttendanceSchema = z.object({
+  event_id: z.string().uuid('ID event absen tidak valid.'),
+  reason: z.string().trim().min(3, 'Alasan pembatalan minimal 3 karakter.'),
 });
 
 export const tripDepartSchema = z
   .object({
     trip_type: z.enum(['FLM', 'RPL', 'CIT']),
-    staff1_id: z.string().uuid('ID Staff 1 tidak valid.'),
+    staff1_verification_id: z.string().uuid('Verifikasi wajah Staff 1 wajib.').optional(),
+    staff2_verification_id: z.string().uuid().optional().nullable(),
+    escort_verification_id: z.string().uuid().optional().nullable(),
+    staff1_id: z.string().uuid('ID Staff 1 tidak valid.').optional(),
     staff2_id: z.string().uuid('ID Staff 2 tidak valid.').optional().nullable(),
     escort_id: z.string().uuid('ID Pengawal tidak valid.').optional().nullable(),
     plate: z
@@ -171,10 +181,21 @@ export const tripDepartSchema = z
     run_code: z.string().trim().optional().nullable(),
     depart_at_token: z.string().datetime().optional(),
   })
-  .refine((d) => !d.staff2_id || d.staff2_id !== d.staff1_id, {
-    message: 'Staff 2 tidak boleh sama dengan Staff 1.',
-    path: ['staff2_id'],
+  .refine((d) => Boolean(d.staff1_verification_id || d.staff1_id), {
+    message: 'Staff 1 wajib diverifikasi wajah.',
+    path: ['staff1_verification_id'],
   })
+  .refine(
+    (d) => {
+      const s1 = d.staff1_id;
+      const s2 = d.staff2_id;
+      return !s1 || !s2 || s1 !== s2;
+    },
+    {
+      message: 'Staff 2 tidak boleh sama dengan Staff 1.',
+      path: ['staff2_id'],
+    }
+  )
   .refine(
     (d) => {
       if (d.trip_type === 'FLM') return Boolean(d.area_id);
@@ -188,7 +209,8 @@ export const tripDepartSchema = z
 
 export const tripReturnSchema = z.object({
   trip_id: z.string().uuid('ID trip tidak valid.'),
-  scanned_employee_id: z.string().uuid('ID karyawan tidak valid.'),
+  verification_id: z.string().uuid('Verifikasi wajah wajib.').optional(),
+  scanned_employee_id: z.string().uuid('ID karyawan tidak valid.').optional(),
   km_end: z.coerce.number().int().min(0, 'KM akhir minimal 0.'),
 });
 
@@ -201,10 +223,17 @@ export const faceEnrollSchema = z.object({
       z.object({
         descriptor: z.array(z.number()).length(128, 'Descriptor harus 128 dimensi.'),
         sample_label: z.string().trim().min(1),
+        quality: z.record(z.unknown()).optional(),
       })
     )
     .min(1, 'Minimal 1 sampel wajah diperlukan.')
-    .max(10, 'Maksimal 10 sampel sekali simpan.'),
+    .max(12, 'Maksimal 12 sampel sekali simpan.'),
+});
+
+export const resetFaceTemplatesSchema = z.object({
+  confirm_phrase: z.literal('RESET', {
+    errorMap: () => ({ message: 'Ketik "RESET" dengan huruf besar untuk konfirmasi.' }),
+  }),
 });
 
 export const createUserSchema = z.object({

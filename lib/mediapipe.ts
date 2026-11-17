@@ -1,10 +1,11 @@
 'use client';
 
 import { FilesetResolver, FaceLandmarker, type FaceLandmarkerResult } from '@mediapipe/tasks-vision';
+import { FACE_CONFIG } from './face-config';
 
 let landmarkerPromise: Promise<FaceLandmarker> | null = null;
 let reusableMpCanvas: HTMLCanvasElement | null = null;
-let reusableQualityBuf: Float32Array | null = null;
+let reusableQualityCanvas: HTMLCanvasElement | null = null;
 
 const MP_W = 192;
 const MP_H = 256;
@@ -13,7 +14,7 @@ export async function getFaceLandmarker(): Promise<FaceLandmarker> {
   if (!landmarkerPromise) {
     landmarkerPromise = (async () => {
       const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-      // Gunakan CPU SIMD WASM agar tidak berebut WebGL dengan video compositing & face-api pada GPU tablet (Mali/Adreno entry-level)
+      // Gunakan CPU SIMD WASM agar tidak berebut WebGL dengan TensorFlow / video rendering
       return await FaceLandmarker.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: '/models/face_landmarker.task',
@@ -22,7 +23,7 @@ export async function getFaceLandmarker(): Promise<FaceLandmarker> {
         runningMode: 'VIDEO',
         numFaces: 2,
         outputFaceBlendshapes: false,
-        outputFacialTransformationMatrixes: false,
+        outputFacialTransformationMatrixes: true, // Diperlukan untuk yaw, pitch, roll yang andal
       });
     })().catch((err) => {
       landmarkerPromise = null;
@@ -40,8 +41,8 @@ export interface VisiblePortraitRect {
 }
 
 export function getVisiblePortraitRect(video: HTMLVideoElement): VisiblePortraitRect {
-  const vw = video.videoWidth || 480;
-  const vh = video.videoHeight || 640;
+  const vw = video.videoWidth || 720;
+  const vh = video.videoHeight || 960;
   const targetAspect = 3 / 4;
   const srcAspect = vw / vh;
 
@@ -79,6 +80,11 @@ export interface NormalizedFaceBox {
   heightRatio: number;
   centerX: number;
   centerY: number;
+  widthPx: number; // Lebar wajah aktual dalam piksel sumber video
+  rollRad: number; // Sudut kemiringan kepala (radian)
+  rollDeg: number; // Sudut kemiringan kepala (derajat)
+  leftEye: { x: number; y: number };
+  rightEye: { x: number; y: number };
 }
 
 export interface FaceQualityAnalysis {
@@ -87,6 +93,7 @@ export interface FaceQualityAnalysis {
   message: string;
   yaw: number;
   pitch: number;
+  rollDeg: number;
   isBlinking: boolean;
   box: NormalizedFaceBox | null;
 }
@@ -99,7 +106,14 @@ function landmarkDist(
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualityAnalysis {
+/**
+ * Menganalisis hasil MediaPipe FaceLandmarker dengan pose matrix & gate kualitas geometris.
+ */
+export function analyzeMediaPipeResult(
+  result: FaceLandmarkerResult,
+  video: HTMLVideoElement,
+  pitchFrontal = 0
+): FaceQualityAnalysis {
   const faceCount = result.faceLandmarks?.length ?? 0;
 
   if (faceCount === 0) {
@@ -109,6 +123,7 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
       message: 'Posisikan wajah di dalam bingkai',
       yaw: 0,
       pitch: 0,
+      rollDeg: 0,
       isBlinking: false,
       box: null,
     };
@@ -121,6 +136,7 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
       message: 'Pastikan hanya satu wajah di depan kamera',
       yaw: 0,
       pitch: 0,
+      rollDeg: 0,
       isBlinking: false,
       box: null,
     };
@@ -144,27 +160,52 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
 
-  const nose = landmarks[1];
-  const leftCheek = landmarks[234];
-  const rightCheek = landmarks[454];
-  const forehead = landmarks[10];
-  const chin = landmarks[152];
+  // Koordinat mata untuk kemiringan roll 2D yang sangat stabil
+  const leftEyeLandmark = landmarks[33]; // Sudut luar mata kiri
+  const rightEyeLandmark = landmarks[263]; // Sudut luar mata kanan
+  const dxEye = rightEyeLandmark.x - leftEyeLandmark.x;
+  const dyEye = rightEyeLandmark.y - leftEyeLandmark.y;
+  const rollRad = Math.atan2(dyEye, dxEye);
+  const rollDeg = (rollRad * 180) / Math.PI;
 
-  const faceW = Math.max(0.01, Math.abs(rightCheek.x - leftCheek.x));
-  const midX = (leftCheek.x + rightCheek.x) / 2;
-  const yaw = (nose.x - midX) / faceW;
+  // Ekstrak yaw dan pitch dari matrix transformasi jika ada, atau hitung via geometri
+  let yaw = 0;
+  let pitch = 0;
 
-  const faceH = Math.max(0.01, Math.abs(chin.y - forehead.y));
-  const midY = (forehead.y + chin.y) / 2;
-  const pitch = (nose.y - midY) / faceH;
+  const matrix = result.facialTransformationMatrixes?.[0]?.data;
+  if (matrix && matrix.length >= 16) {
+    // Column-major rotation matrix
+    // M[0]=R00, M[1]=R10, M[2]=R20, M[4]=R01, M[5]=R11, M[6]=R21, M[8]=R02, M[9]=R12, M[10]=R22
+    yaw = Math.asin(Math.max(-1, Math.min(1, matrix[2])));
+    pitch = Math.atan2(matrix[6], matrix[10]);
+  } else {
+    // Fallback geometri landmark
+    const nose = landmarks[1];
+    const leftCheek = landmarks[234];
+    const rightCheek = landmarks[454];
+    const forehead = landmarks[10];
+    const chin = landmarks[152];
 
-  // Hitung Eye Aspect Ratio langsung dari landmark mata (tanpa beban model blendshapes)
+    const faceW = Math.max(0.01, Math.abs(rightCheek.x - leftCheek.x));
+    const midX = (leftCheek.x + rightCheek.x) / 2;
+    yaw = (nose.x - midX) / faceW;
+
+    const faceH = Math.max(0.01, Math.abs(chin.y - forehead.y));
+    const midY = (forehead.y + chin.y) / 2;
+    pitch = (nose.y - midY) / faceH;
+  }
+
+  // Hitung Eye Aspect Ratio (EAR)
   const leftEyeV = landmarkDist(landmarks[159], landmarks[145]);
   const leftEyeH = Math.max(0.005, landmarkDist(landmarks[33], landmarks[133]));
   const rightEyeV = landmarkDist(landmarks[386], landmarks[374]);
   const rightEyeH = Math.max(0.005, landmarkDist(landmarks[362], landmarks[263]));
   const avgEar = (leftEyeV / leftEyeH + rightEyeV / rightEyeH) / 2;
   const isBlinking = avgEar < 0.21;
+
+  // Hitung lebar wajah aktual dalam piksel video sumber
+  const rect = getVisiblePortraitRect(video);
+  const widthPx = widthRatio * rect.sw;
 
   const box: NormalizedFaceBox = {
     minX,
@@ -175,15 +216,22 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
     heightRatio,
     centerX,
     centerY,
+    widthPx,
+    rollRad,
+    rollDeg,
+    leftEye: { x: leftEyeLandmark.x, y: leftEyeLandmark.y },
+    rightEye: { x: rightEyeLandmark.x, y: rightEyeLandmark.y },
   };
 
-  if (widthRatio < 0.16 || heightRatio < 0.17) {
+  // Gate 1: Jarak / Ukuran Wajah (dalam piksel sumber video)
+  if (widthPx < FACE_CONFIG.MIN_FACE_PX) {
     return {
       faceCount: 1,
       statusOk: false,
       message: 'Mendekat sedikit ke kamera',
       yaw,
       pitch,
+      rollDeg,
       isBlinking,
       box,
     };
@@ -196,11 +244,13 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
       message: 'Mundur sedikit agar seluruh wajah terlihat',
       yaw,
       pitch,
+      rollDeg,
       isBlinking,
       box,
     };
   }
 
+  // Gate 2: Posisi Wajah di Tengah Bingkai
   if (centerX < 0.20 || centerX > 0.80 || centerY < 0.16 || centerY > 0.84) {
     return {
       faceCount: 1,
@@ -208,6 +258,48 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
       message: 'Posisikan wajah di tengah bingkai',
       yaw,
       pitch,
+      rollDeg,
+      isBlinking,
+      box,
+    };
+  }
+
+  // Gate 3: Sudut Hadap Wajah (Pose Gating)
+  if (Math.abs(yaw) > FACE_CONFIG.MAX_ABS_YAW) {
+    return {
+      faceCount: 1,
+      statusOk: false,
+      message: 'Hadap lurus ke kamera',
+      yaw,
+      pitch,
+      rollDeg,
+      isBlinking,
+      box,
+    };
+  }
+
+  const pitchDelta = pitch - pitchFrontal;
+  if (Math.abs(pitchDelta) > FACE_CONFIG.MAX_ABS_PITCH_DELTA) {
+    return {
+      faceCount: 1,
+      statusOk: false,
+      message: pitchDelta > 0 ? 'Tundukkan kepala sedikit' : 'Tegakkan kepala sedikit',
+      yaw,
+      pitch,
+      rollDeg,
+      isBlinking,
+      box,
+    };
+  }
+
+  if (Math.abs(rollDeg) > FACE_CONFIG.MAX_ABS_ROLL_DEG) {
+    return {
+      faceCount: 1,
+      statusOk: false,
+      message: 'Posisikan kepala tegak lurus',
+      yaw,
+      pitch,
+      rollDeg,
       isBlinking,
       box,
     };
@@ -219,57 +311,157 @@ export function analyzeMediaPipeResult(result: FaceLandmarkerResult): FaceQualit
     message: 'Wajah terdeteksi baik',
     yaw,
     pitch,
+    rollDeg,
     isBlinking,
     box,
   };
 }
 
-export function checkCanvasQuality(canvas: HTMLCanvasElement): {
+export interface CropQualityMetrics {
+  brightness: number;
+  lrRatio: number;
+  clippedPct: number;
+  sharpness: number;
+}
+
+/**
+ * Fungsi Murni Evaluasi Metrik Kualitas Gambar Wajah
+ * Menguji luminance, rasio kiri/kanan, pixel jenuh (silau), dan ketajaman (Laplacian).
+ */
+export function evaluateCropPixels(
+  data: Uint8ClampedArray | Uint8Array | number[],
+  sampleW: number = 160,
+  sampleH: number = 160
+): {
   ok: boolean;
   reason?: string;
+  metrics: CropQualityMetrics;
 } {
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return { ok: true };
+  const totalPixels = sampleW * sampleH;
+  const gray = new Float32Array(totalPixels);
 
-  // Sampling grid 96x128 dari tengah canvas (zero canvas allocation)
-  const w = 96;
-  const h = 128;
-  const ox = Math.max(0, Math.floor((canvas.width - w) / 2));
-  const oy = Math.max(0, Math.floor((canvas.height - h) / 2));
-  const img = ctx.getImageData(ox, oy, w, h).data;
+  let sumBrightness = 0;
+  let leftBrightness = 0;
+  let rightBrightness = 0;
+  let clippedCount = 0;
 
-  if (!reusableQualityBuf || reusableQualityBuf.length !== w * h) {
-    reusableQualityBuf = new Float32Array(w * h);
-  }
-  const lumGrid = reusableQualityBuf;
+  const midX = sampleW / 2;
 
-  let sumLum = 0;
-  let edgeEnergy = 0;
+  for (let y = 0; y < sampleH; y++) {
+    for (let x = 0; x < sampleW; x++) {
+      const idx = (y * sampleW + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
 
-  for (let i = 0; i < w * h; i++) {
-    const idx = i * 4;
-    const lum = 0.299 * img[idx] + 0.587 * img[idx + 1] + 0.114 * img[idx + 2];
-    lumGrid[i] = lum;
-    sumLum += lum;
-  }
+      // Luminance ITU-R BT.601
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const pIdx = y * sampleW + x;
+      gray[pIdx] = lum;
+      sumBrightness += lum;
 
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const idx = y * w + x;
-      const gx = Math.abs(lumGrid[idx + 1] - lumGrid[idx - 1]);
-      const gy = Math.abs(lumGrid[idx + w] - lumGrid[idx - w]);
-      edgeEnergy += gx + gy;
+      if (lum > 250) clippedCount++;
+
+      if (x < midX) {
+        leftBrightness += lum;
+      } else {
+        rightBrightness += lum;
+      }
     }
   }
 
-  const avgBrightness = sumLum / (w * h);
-  const avgEdge = edgeEnergy / ((w - 2) * (h - 2));
+  const brightness = sumBrightness / totalPixels;
+  const halfPixels = totalPixels / 2;
+  const leftAvg = leftBrightness / halfPixels;
+  const rightAvg = rightBrightness / halfPixels;
+  const lrRatio = leftAvg / Math.max(1, rightAvg);
+  const clippedPct = (clippedCount / totalPixels) * 100;
 
-  if (avgBrightness < 34) {
-    return { ok: false, reason: 'Pencahayaan terlalu gelap, tambah cahaya' };
+  // Hitung Ketajaman (Variance of Laplacian)
+  // Kernel: [0, 1, 0; 1, -4, 1; 0, 1, 0]
+  let lapSum = 0;
+  let lapSumSq = 0;
+  let lapCount = 0;
+
+  for (let y = 1; y < sampleH - 1; y++) {
+    for (let x = 1; x < sampleW - 1; x++) {
+      const idx = y * sampleW + x;
+      const val =
+        gray[idx - sampleW] +
+        gray[idx + sampleW] +
+        gray[idx - 1] +
+        gray[idx + 1] -
+        4 * gray[idx];
+
+      lapSum += val;
+      lapSumSq += val * val;
+      lapCount++;
+    }
   }
-  if (avgEdge < 4.5) {
-    return { ok: false, reason: 'Gambar buram, tahan posisi stabil' };
+
+  const lapMean = lapSum / lapCount;
+  const sharpness = Math.max(0, lapSumSq / lapCount - lapMean * lapMean);
+
+  const metrics: CropQualityMetrics = {
+    brightness: Math.round(brightness),
+    lrRatio: Number(lrRatio.toFixed(2)),
+    clippedPct: Number(clippedPct.toFixed(1)),
+    sharpness: Math.round(sharpness),
+  };
+
+  // Validasi Kualitas terhadap Konfigurasi
+  const [minB, maxB] = FACE_CONFIG.BRIGHTNESS_RANGE;
+  if (brightness < minB) {
+    return { ok: false, reason: 'Pencahayaan terlalu gelap, cari area lebih terang', metrics };
   }
-  return { ok: true };
+  if (brightness > maxB) {
+    return { ok: false, reason: 'Pencahayaan terlalu silau / over-exposure', metrics };
+  }
+
+  const [minLR, maxLR] = FACE_CONFIG.LR_BRIGHTNESS_RATIO;
+  if (lrRatio < minLR || lrRatio > maxLR) {
+    return { ok: false, reason: 'Cahaya tidak merata (hindari bayangan atau cahaya dari samping)', metrics };
+  }
+
+  if (clippedPct > FACE_CONFIG.MAX_CLIPPED_PIXEL_PCT) {
+    return { ok: false, reason: 'Wajah terlalu silau', metrics };
+  }
+
+  if (sharpness < FACE_CONFIG.MIN_SHARPNESS) {
+    return { ok: false, reason: 'Gambar buram, tahan posisi tetap tenang', metrics };
+  }
+
+  return { ok: true, metrics };
+}
+
+/**
+ * Filter Kualitas Gambar Pada Crop Wajah (160x160 Grayscale)
+ * Memeriksa luminance, backlight/bayangan samping, over-exposure, dan ketajaman (Laplacian).
+ */
+export function checkCropQuality(cropCanvas: HTMLCanvasElement): {
+  ok: boolean;
+  reason?: string;
+  metrics: CropQualityMetrics;
+} {
+  const sampleW = 160;
+  const sampleH = 160;
+
+  if (!reusableQualityCanvas) {
+    reusableQualityCanvas = document.createElement('canvas');
+    reusableQualityCanvas.width = sampleW;
+    reusableQualityCanvas.height = sampleH;
+  }
+
+  const qCtx = reusableQualityCanvas.getContext('2d', { willReadFrequently: true });
+  if (!qCtx) {
+    return {
+      ok: true,
+      metrics: { brightness: 120, lrRatio: 1, clippedPct: 0, sharpness: 100 },
+    };
+  }
+
+  // Draw crop ke 160x160
+  qCtx.drawImage(cropCanvas, 0, 0, sampleW, sampleH);
+  const imgData = qCtx.getImageData(0, 0, sampleW, sampleH);
+  return evaluateCropPixels(imgData.data, sampleW, sampleH);
 }

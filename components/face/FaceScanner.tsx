@@ -4,42 +4,43 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AlertCircle,
-  Camera,
-  CheckCircle2,
   Loader2,
   RefreshCw,
   ScanFace,
-  Sparkles,
   X,
 } from 'lucide-react';
-import type { SubjectType } from '@/types/database';
-import {
-  ensureFaceModelsLoaded,
-  extractFaceDescriptor,
-  getCachedFaceTemplates,
-  matchDescriptor,
-  type CachedFaceTemplate,
-  type FaceMatchSuccess,
-} from '@/lib/face';
+import type { SubjectType, VerificationPurpose } from '@/types/database';
+import { ensureFaceModelsLoaded, extractFaceDescriptor } from '@/lib/face';
 import {
   analyzeMediaPipeResult,
   capturePortraitSampleCanvas,
-  checkCanvasQuality,
   getFaceLandmarker,
+  type CropQualityMetrics,
 } from '@/lib/mediapipe';
+import { FACE_CONFIG } from '@/lib/face-config';
+import { ConfirmIdentitySheet, type ConfirmCandidate } from './ConfirmIdentitySheet';
+
+export interface FaceScanSuccessPayload {
+  verification_id: string;
+  subject_type: SubjectType;
+  subject_id: string;
+  name: string;
+  subtitle: string;
+  code?: string;
+}
 
 export interface FaceScannerProps {
-  purpose: SubjectType;
+  purpose?: VerificationPurpose | SubjectType;
   title?: string;
   subtitle?: string;
-  onResult: (result: FaceMatchSuccess) => void | Promise<void>;
+  onResult: (result: FaceScanSuccessPayload) => void | Promise<void>;
   onCancel: () => void;
   paused?: boolean;
   showEnrollHintLink?: boolean;
 }
 
 export function FaceScanner({
-  purpose,
+  purpose = 'absen',
   title,
   subtitle,
   onResult,
@@ -47,17 +48,29 @@ export function FaceScanner({
   paused = false,
   showEnrollHintLink = true,
 }: FaceScannerProps) {
+  // Normalisasi purpose dan subject_type
+  const normalizedPurpose: VerificationPurpose =
+    purpose === 'escort'
+      ? 'trip_escort'
+      : purpose === 'employee'
+      ? 'absen'
+      : (purpose as VerificationPurpose);
+
+  const subjectType: SubjectType =
+    normalizedPurpose === 'trip_escort' ? 'escort' : 'employee';
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastCacheRefreshRef = useRef<number>(0);
-  const templatesRef = useRef<CachedFaceTemplate[]>([]);
+
   const processingRef = useRef<boolean>(false);
   const cooldownUntilRef = useRef<number>(0);
-  const livenessPassedRef = useRef<boolean>(false);
-  const prevNosePosRef = useRef<{ x: number; y: number } | null>(null);
-  const motionAccumRef = useRef<number>(0);
-  const pendingConfirmRef = useRef<{ subjectId: string; count: number } | null>(null);
+
+  // Stabilitas & Multi-frame state
+  const stableStartTimeRef = useRef<number | null>(null);
+  const collectedFramesRef = useRef<number[][]>([]);
+  const lastFrameCaptureAtRef = useRef<number>(0);
+  const pitchFrontalRef = useRef<number>(0);
 
   const [cameraReady, setCameraReady] = useState(false);
   const [modelsReady, setModelsReady] = useState(false);
@@ -66,6 +79,31 @@ export function FaceScanner({
   const [statusTone, setStatusTone] = useState<'neutral' | 'ready' | 'success' | 'warn' | 'error'>('neutral');
   const [failCount, setFailCount] = useState(0);
   const [retryCounter, setRetryCounter] = useState(0);
+
+  // State Konfirmasi (Zona Confirm)
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmVerificationId, setConfirmVerificationId] = useState<string>('');
+  const [confirmCandidates, setConfirmCandidates] = useState<ConfirmCandidate[]>([]);
+
+  // Debug metrics overlay
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugMetrics, setDebugMetrics] = useState<{
+    widthPx?: number;
+    yaw?: number;
+    pitch?: number;
+    rollDeg?: number;
+    cropMetrics?: CropQualityMetrics;
+    framesCollected?: number;
+    lastScore?: number | null;
+    lastMargin?: number | null;
+  }>({});
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('debug') === '1') setShowDebug(true);
+    }
+  }, []);
 
   const stopCamera = useCallback(() => {
     if (timerRef.current !== null) {
@@ -81,11 +119,10 @@ export function FaceScanner({
     }
   }, []);
 
-  const resetChallenge = useCallback(() => {
-    livenessPassedRef.current = false;
-    motionAccumRef.current = 0;
-    prevNosePosRef.current = null;
-    pendingConfirmRef.current = null;
+  const resetCaptureState = useCallback(() => {
+    stableStartTimeRef.current = null;
+    collectedFramesRef.current = [];
+    lastFrameCaptureAtRef.current = 0;
   }, []);
 
   useEffect(() => {
@@ -103,78 +140,67 @@ export function FaceScanner({
           throw new Error('UNSUPPORTED_CAMERA');
         }
 
-        // Resolusi ringan 480x640 agar preview mulus 30fps di tablet RAM 3GB
-        const streamPromise = navigator.mediaDevices.getUserMedia({
+        // Resolusi ideal 720x960 portrait dengan fallback otomatis ke yang tersedia
+        const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width: { ideal: 480 },
-            height: { ideal: 640 },
+            width: { ideal: 720, min: 480 },
+            height: { ideal: 960, min: 640 },
             frameRate: { ideal: 24, max: 30 },
           },
           audio: false,
         });
 
-        const modelsPromise = Promise.all([
-          getCachedFaceTemplates(purpose),
-          getFaceLandmarker(),
-          ensureFaceModelsLoaded(),
-        ]);
-
-        const stream = await streamPromise;
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
 
         streamRef.current = stream;
-        const videoEl = videoRef.current;
-        if (videoEl) {
-          videoEl.srcObject = stream;
-          await videoEl.play();
-        }
-        setCameraReady(true);
-        setStatusMessage('Menyiapkan pengenalan wajah...');
 
-        const [templates] = await modelsPromise;
+        const video = videoRef.current;
+        if (!video) return;
+
+        video.srcObject = stream;
+        video.setAttribute('playsinline', 'true');
+        video.muted = true;
+
+        await new Promise<void>((resolve) => {
+          if (video.readyState >= 2) {
+            resolve();
+            return;
+          }
+          video.onloadedmetadata = () => resolve();
+        });
+
         if (cancelled) return;
 
-        templatesRef.current = templates;
-        lastCacheRefreshRef.current = Date.now();
-        setModelsReady(true);
+        await video.play();
+        setCameraReady(true);
+        setStatusMessage('Menyiapkan model AI...');
 
-        if (templates.length === 0) {
-          setStatusTone('warn');
-          setStatusMessage(
-            purpose === 'employee'
-              ? 'Belum ada wajah karyawan yang terdaftar.'
-              : 'Belum ada wajah pengawal yang terdaftar.'
-          );
-        } else {
-          setStatusTone('neutral');
-          setStatusMessage('Posisikan wajah di dalam bingkai');
-        }
-      } catch (err) {
+        // Inisialisasi model MediaPipe dan face-api
+        await Promise.all([getFaceLandmarker(), ensureFaceModelsLoaded()]);
+
+        if (cancelled) return;
+        setModelsReady(true);
+        setStatusTone('neutral');
+        setStatusMessage('Posisikan wajah Anda di depan kamera');
+      } catch (err: unknown) {
         if (cancelled) return;
         stopCamera();
         setCameraReady(false);
         setModelsReady(false);
 
-        const errorName = err instanceof DOMException ? err.name : '';
-        const errMsg = err instanceof Error ? err.message : '';
-        if (errorName === 'NotAllowedError' || errorName === 'PermissionDeniedError') {
-          setCameraError(
-            'Izin kamera ditolak. Mohon izinkan akses kamera pada pengaturan browser tablet.'
-          );
-        } else if (errorName === 'NotFoundError' || errorName === 'DevicesNotFoundError') {
-          setCameraError('Kamera depan tidak ditemukan pada perangkat ini.');
-        } else if (errMsg === 'UNSUPPORTED_CAMERA') {
-          setCameraError(
-            'Browser tidak mendukung akses kamera atau halaman tidak dibuka melalui HTTPS.'
-          );
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg === 'UNSUPPORTED_CAMERA') {
+          setCameraError('Perangkat Anda tidak mendukung akses kamera.');
+        } else if (errMsg.includes('NotAllowedError') || errMsg.includes('Permission')) {
+          setCameraError('Izin kamera ditolak. Berikan izin kamera di pengaturan browser.');
+        } else if (errMsg.includes('NotFoundError')) {
+          setCameraError('Kamera tidak ditemukan pada perangkat ini.');
         } else {
-          setCameraError(
-            'Gagal memuat kamera atau model pengenalan wajah. Periksa koneksi lalu coba lagi.'
-          );
+          setCameraError('Gagal mengakses kamera. Muat ulang halaman.');
         }
       }
     }
@@ -185,280 +211,293 @@ export function FaceScanner({
       cancelled = true;
       stopCamera();
     };
-  }, [purpose, retryCounter, stopCamera]);
+  }, [retryCounter, stopCamera]);
 
-  // Gunakan penjadwalan interval 250ms (~4 fps) agar GPU/CPU punya jeda penuh me-render video mulus 30fps
+  // Loop Pendeteksian Multi-Frame & Verifikasi di Server
   useEffect(() => {
-    if (!cameraReady || !modelsReady || cameraError || paused) return;
+    if (!cameraReady || !modelsReady || paused || confirmOpen) {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
 
     let active = true;
 
     const scheduleNext = (delayMs: number) => {
       if (!active) return;
-      timerRef.current = setTimeout(runStep, delayMs);
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(runLoop, delayMs);
     };
 
-    const runStep = async () => {
-      if (!active) return;
-
-      if (document.hidden || processingRef.current || Date.now() < cooldownUntilRef.current) {
-        scheduleNext(260);
-        return;
-      }
+    const runLoop = async () => {
+      if (!active || processingRef.current) return;
 
       const video = videoRef.current;
-      if (!video || video.readyState < 2 || !video.videoWidth) {
-        scheduleNext(260);
+      if (!video || video.readyState < 2 || video.paused || video.ended) {
+        scheduleNext(120);
         return;
       }
 
-      // Refresh cache tiap 3 menit
-      if (Date.now() - lastCacheRefreshRef.current > 3 * 60 * 1000) {
-        lastCacheRefreshRef.current = Date.now();
-        getCachedFaceTemplates(purpose, true)
-          .then((list) => {
-            templatesRef.current = list;
-          })
-          .catch(() => null);
-      }
-
-      if (templatesRef.current.length === 0) {
-        setStatusTone('warn');
-        setStatusMessage(
-          purpose === 'employee'
-            ? 'Belum ada wajah karyawan terdaftar. Silakan Daftar Wajah terlebih dahulu.'
-            : 'Belum ada wajah pengawal terdaftar. Silakan Daftar Wajah terlebih dahulu.'
-        );
-        scheduleNext(800);
+      if (Date.now() < cooldownUntilRef.current) {
+        scheduleNext(150);
         return;
       }
 
       try {
         const sampleCanvas = capturePortraitSampleCanvas(video);
         if (!sampleCanvas) {
-          scheduleNext(250);
+          scheduleNext(150);
           return;
         }
 
         const landmarker = await getFaceLandmarker();
         const mpRes = landmarker.detectForVideo(sampleCanvas, performance.now());
-        const analysis = analyzeMediaPipeResult(mpRes);
+        const analysis = analyzeMediaPipeResult(mpRes, video, pitchFrontalRef.current);
 
+        if (showDebug) {
+          setDebugMetrics((prev) => ({
+            ...prev,
+            widthPx: analysis.box?.widthPx ? Math.round(analysis.box.widthPx) : 0,
+            yaw: Number(analysis.yaw.toFixed(2)),
+            pitch: Number(analysis.pitch.toFixed(2)),
+            rollDeg: Number(analysis.rollDeg.toFixed(1)),
+          }));
+        }
+
+        // Jika wajah belum lolos gate geometris / pose MediaPipe
         if (!analysis.statusOk || !analysis.box) {
-          pendingConfirmRef.current = null;
+          resetCaptureState();
           setStatusTone('neutral');
           setStatusMessage(analysis.message);
-          scheduleNext(240);
+          scheduleNext(200);
           return;
         }
 
-        const nose = mpRes.faceLandmarks[0]?.[1];
-        if (nose && prevNosePosRef.current) {
-          const dist = Math.hypot(
-            nose.x - prevNosePosRef.current.x,
-            nose.y - prevNosePosRef.current.y
-          );
-          if (dist > 0.0015) {
-            motionAccumRef.current += dist;
-          }
-        }
-        if (nose) {
-          prevNosePosRef.current = { x: nose.x, y: nose.y };
+        // Kalibrasi pitch frontal jika belum diset
+        if (pitchFrontalRef.current === 0) {
+          pitchFrontalRef.current = analysis.pitch;
         }
 
-        if (!livenessPassedRef.current) {
-          if (
-            analysis.isBlinking ||
-            motionAccumRef.current >= 0.009 ||
-            Math.abs(analysis.yaw) >= 0.05
-          ) {
-            livenessPassedRef.current = true;
-          } else {
-            setStatusTone('ready');
-            setStatusMessage('Berkedip atau gerakkan wajah sedikit');
-            scheduleNext(220);
-            return;
-          }
-        }
+        const now = Date.now();
 
-        if (Math.abs(analysis.yaw) > 0.14) {
+        // Cek kestabilan posisi wajah minimal 600ms sebelum mulai multi-frame capture
+        if (stableStartTimeRef.current === null) {
+          stableStartTimeRef.current = now;
           setStatusTone('ready');
-          setStatusMessage('Hadapkan wajah lurus ke kamera');
-          scheduleNext(220);
+          setStatusMessage('Tahan posisi wajah...');
+          scheduleNext(100);
           return;
         }
 
-        const quality = checkCanvasQuality(sampleCanvas);
-        if (!quality.ok) {
+        const stableDuration = now - stableStartTimeRef.current;
+        if (stableDuration < 500) {
+          setStatusTone('ready');
+          setStatusMessage('Tahan posisi wajah...');
+          scheduleNext(100);
+          return;
+        }
+
+        // Kumpulkan frame dengan jeda minimal FRAME_SPACING_MS (150ms)
+        const timeSinceLastFrame = now - lastFrameCaptureAtRef.current;
+        if (timeSinceLastFrame < FACE_CONFIG.FRAME_SPACING_MS) {
+          scheduleNext(50);
+          return;
+        }
+
+        // Ekstrak descriptor dari frame saat ini
+        const extractRes = await extractFaceDescriptor(video, analysis.box);
+
+        if (showDebug && extractRes.metrics) {
+          setDebugMetrics((prev) => ({
+            ...prev,
+            cropMetrics: extractRes.metrics,
+          }));
+        }
+
+        if (!extractRes.descriptor) {
           setStatusTone('warn');
-          setStatusMessage(quality.reason ?? 'Sesuaikan pencahayaan kamera');
-          scheduleNext(260);
+          setStatusMessage(extractRes.reason ?? 'Posisikan wajah lebih jelas');
+          scheduleNext(150);
           return;
         }
 
+        collectedFramesRef.current.push(extractRes.descriptor);
+        lastFrameCaptureAtRef.current = now;
+
+        const count = collectedFramesRef.current.length;
+        if (showDebug) {
+          setDebugMetrics((prev) => ({ ...prev, framesCollected: count }));
+        }
+
+        setStatusTone('ready');
+        setStatusMessage(`Merekam frame (${count}/${FACE_CONFIG.FRAMES_REQUIRED})...`);
+
+        // Jika frame belum mencapai FRAMES_REQUIRED, lanjutkan kumpulkan
+        if (count < FACE_CONFIG.FRAMES_REQUIRED) {
+          scheduleNext(100);
+          return;
+        }
+
+        // Setelah terkumpul cukup frame lolos kualitas, kirim ke server untuk verifikasi
         processingRef.current = true;
         setStatusTone('ready');
-        setStatusMessage('Memverifikasi wajah...');
+        setStatusMessage('Memverifikasi identitas di server...');
 
-        // Beri jeda 1 frame agar UI status sempat ter-paint sebelum inferensi TFJS
-        await new Promise((resolve) => setTimeout(resolve, 16));
-        if (!active) return;
+        const descriptorsToSend = [...collectedFramesRef.current];
+        resetCaptureState();
 
-        const descriptor = await extractFaceDescriptor(video, analysis.box);
-        if (!descriptor) {
-          processingRef.current = false;
-          setStatusTone('warn');
-          setStatusMessage('Wajah kurang jelas, tahan sebentar...');
-          scheduleNext(240);
-          return;
+        const verifyRes = await fetch('/api/face/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            purpose: normalizedPurpose,
+            subject_type: subjectType,
+            descriptors: descriptorsToSend,
+          }),
+        });
+
+        const verifyJson = (await verifyRes.json()) as {
+          status?: 'accepted' | 'confirm' | 'rejected' | 'retry';
+          verification_id?: string;
+          subject?: { id: string; name: string; subtitle: string; code?: string };
+          candidates?: ConfirmCandidate[];
+          score?: number | null;
+          margin?: number | null;
+          reason?: string;
+          bestScore?: number | null;
+        };
+
+        if (showDebug) {
+          setDebugMetrics((prev) => ({
+            ...prev,
+            lastScore: verifyJson.score ?? verifyJson.bestScore ?? null,
+            lastMargin: verifyJson.margin ?? null,
+          }));
         }
 
-        const outcome = matchDescriptor(descriptor, templatesRef.current);
-
-        if (outcome.matched) {
-          if (outcome.distance > 0.34) {
-            const prev = pendingConfirmRef.current;
-            if (!prev || prev.subjectId !== outcome.subject_id) {
-              pendingConfirmRef.current = { subjectId: outcome.subject_id, count: 1 };
-              processingRef.current = false;
-              setStatusTone('ready');
-              setStatusMessage('Memastikan identitas...');
-              scheduleNext(160);
-              return;
-            }
-          }
-
-          cooldownUntilRef.current = Date.now() + 3000;
+        // 1. ZONA ACCEPT: Identitas Terverifikasi Yakin
+        if (verifyJson.status === 'accepted' && verifyJson.verification_id && verifyJson.subject) {
           setStatusTone('success');
-          setStatusMessage(`Terdeteksi: ${outcome.name}`);
-          setFailCount(0);
-          resetChallenge();
-          await onResult(outcome);
+          setStatusMessage(`Terverifikasi: ${verifyJson.subject.name}`);
+          await onResult({
+            verification_id: verifyJson.verification_id,
+            subject_type: subjectType,
+            subject_id: verifyJson.subject.id,
+            name: verifyJson.subject.name,
+            subtitle: verifyJson.subject.subtitle,
+            code: verifyJson.subject.code,
+          });
           processingRef.current = false;
           return;
         }
 
-        pendingConfirmRef.current = null;
-        cooldownUntilRef.current = Date.now() + 900;
+        // 2. ZONA CONFIRM: Wajah Memiliki Kemiripan dengan Lebih dari 1 Orang
+        if (verifyJson.status === 'confirm' && verifyJson.verification_id && verifyJson.candidates) {
+          setStatusTone('warn');
+          setStatusMessage('Silakan konfirmasi nama Anda');
+          setConfirmVerificationId(verifyJson.verification_id);
+          setConfirmCandidates(verifyJson.candidates);
+          setConfirmOpen(true);
+          processingRef.current = false;
+          return;
+        }
+
+        // 3. RETRY: Frame tidak konsisten / outlier
+        if (verifyJson.status === 'retry') {
+          setStatusTone('warn');
+          setStatusMessage(verifyJson.reason ?? 'Gerakan terdeteksi, coba tahan stabil');
+          cooldownUntilRef.current = Date.now() + 800;
+          processingRef.current = false;
+          scheduleNext(300);
+          return;
+        }
+
+        // 4. ZONA REJECT: Wajah Tidak Dikenali
         setFailCount((prev) => prev + 1);
         setStatusTone('error');
-        setStatusMessage(
-          outcome.reason === 'ambiguous'
-            ? 'Wajah mirip dengan profil lain, hadap lurus lebih jelas'
-            : 'Wajah tidak dikenali, coba lagi'
-        );
-        resetChallenge();
+        setStatusMessage('Wajah tidak dikenali dalam sistem. Silakan coba lagi.');
+        cooldownUntilRef.current = Date.now() + 1000;
         processingRef.current = false;
         scheduleNext(300);
       } catch {
+        resetCaptureState();
         processingRef.current = false;
-        scheduleNext(350);
+        scheduleNext(300);
       }
     };
 
-    // Beri jeda 220ms agar feed video kamera stabil terlebih dahulu
-    scheduleNext(220);
-
-    const handleVisibility = () => {
-      if (document.hidden) {
-        pendingConfirmRef.current = null;
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
+    scheduleNext(200);
 
     return () => {
       active = false;
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      document.removeEventListener('visibilitychange', handleVisibility);
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
     };
-  }, [cameraError, cameraReady, modelsReady, onResult, paused, purpose, resetChallenge]);
-
-  const toneBadgeClasses = {
-    neutral: 'bg-slate-900/90 text-white border-white/20',
-    ready: 'bg-primary-600 text-white border-primary-300',
-    success: 'bg-emerald-600 text-white border-emerald-300',
-    warn: 'bg-amber-600 text-white border-amber-300',
-    error: 'bg-red-600 text-white border-red-300',
-  }[statusTone];
+  }, [cameraReady, modelsReady, paused, confirmOpen, normalizedPurpose, subjectType, showDebug, onResult, resetCaptureState]);
 
   return (
-    <div className="w-full max-w-md mx-auto rounded-2xl bg-surface border-2 border-border-sky shadow-card overflow-hidden">
-      <div className="px-4 py-3 border-b border-border-sky flex items-center justify-between gap-3 bg-white">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-primary-100 text-primary-700 flex items-center justify-center shrink-0">
-            <ScanFace className="w-5 h-5" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-base font-extrabold text-ink truncate">
-              {title ?? (purpose === 'employee' ? 'Scan Wajah Karyawan' : 'Scan Wajah Pengawal')}
-            </h2>
-            {subtitle && <p className="text-[11px] text-ink-muted truncate">{subtitle}</p>}
-          </div>
+    <div className="w-full flex flex-col items-center gap-3">
+      {(title || subtitle) && (
+        <div className="text-center">
+          {title && <h2 className="text-sm font-bold text-ink">{title}</h2>}
+          {subtitle && <p className="text-xs text-ink-muted">{subtitle}</p>}
         </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            stopCamera();
-            onCancel();
-          }}
-          className="inline-flex items-center gap-1 rounded-xl border border-border-sky bg-white hover:bg-page px-3 py-2 text-xs font-bold text-ink transition shrink-0 min-h-[40px]"
-        >
-          <X className="w-4 h-4" />
-          <span>Batal</span>
-        </button>
-      </div>
-
-      {/* Container kamera portrait 3:4 tanpa shadow/blur berat agar smooth 30fps di Mali GPU */}
-      <div className="relative bg-slate-950 aspect-[3/4] max-h-[68vh] w-full flex items-center justify-center overflow-hidden">
+      )}
+      {/* Container Kamera Portrait */}
+      <div className="relative w-full aspect-[3/4] max-w-sm rounded-3xl overflow-hidden bg-slate-900 border-2 border-border-sky shadow-card flex items-center justify-center">
+        {/* Feed Video Kamera */}
         <video
           ref={videoRef}
+          className="absolute inset-0 w-full h-full object-cover -scale-x-100"
           playsInline
           muted
-          autoPlay
-          className="w-full h-full object-cover mirror-video"
         />
 
-        {/* Overlay Oval Ringan (border-only tanpa box-shadow 9999px) */}
-        {!cameraError && (
-          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div
-              className={`w-[64%] h-[62%] rounded-[999px] border-[3px] transition-colors duration-200 ${
-                statusTone === 'success'
-                  ? 'border-emerald-400'
-                  : statusTone === 'error'
-                    ? 'border-red-400'
-                    : statusTone === 'ready'
-                      ? 'border-primary'
-                      : 'border-white/85'
-              }`}
-            />
-          </div>
-        )}
+        {/* Overlay Bingkai Wajah Oval */}
+        <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+          <div
+            className={`w-56 h-72 rounded-[48%] border-2 transition-colors duration-300 ${
+              statusTone === 'success'
+                ? 'border-emerald-400 shadow-[0_0_24px_rgba(52,211,153,0.45)]'
+                : statusTone === 'ready'
+                ? 'border-primary-400 shadow-[0_0_20px_rgba(56,189,248,0.35)]'
+                : statusTone === 'warn'
+                ? 'border-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.35)]'
+                : statusTone === 'error'
+                ? 'border-rose-400 shadow-[0_0_20px_rgba(244,63,94,0.35)]'
+                : 'border-white/40'
+            }`}
+          />
+        </div>
 
-        {!cameraReady && !cameraError && (
-          <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center text-white gap-3 p-6 text-center">
-            <Loader2 className="w-10 h-10 animate-spin text-primary" />
-            <p className="text-sm font-bold">Menyalakan kamera depan...</p>
-          </div>
-        )}
-
-        {cameraError && (
-          <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center text-white gap-4 p-6 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-danger/20 text-red-400 flex items-center justify-center">
-              <Camera className="w-8 h-8" />
+        {/* Loading Spinner State */}
+        {(!cameraReady || !modelsReady) && !cameraError && (
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3 p-4 text-center">
+            <Loader2 className="w-10 h-10 text-primary-400 animate-spin" />
+            <div className="text-sm font-bold text-white tracking-wide">
+              {statusMessage}
             </div>
-            <div className="max-w-xs space-y-1.5">
-              <h3 className="text-base font-bold">Kamera Tidak Dapat Diakses</h3>
-              <p className="text-xs text-slate-300">{cameraError}</p>
+            <div className="text-xs text-slate-400">
+              Menyiapkan kamera dan model kecerdasan buatan...
+            </div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {cameraError && (
+          <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center gap-3 p-6 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-danger/20 text-danger flex items-center justify-center mb-1">
+              <AlertCircle className="w-8 h-8" />
+            </div>
+            <div className="text-base font-extrabold text-white">Kamera Bermasalah</div>
+            <div className="text-xs text-slate-300 leading-relaxed max-w-xs">
+              {cameraError}
             </div>
             <button
               type="button"
-              onClick={() => setRetryCounter((c) => c + 1)}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-5 py-3 text-sm font-bold transition min-h-[44px]"
+              onClick={() => setRetryCounter((p) => p + 1)}
+              className="mt-2 inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 text-xs font-bold transition shadow-soft"
             >
               <RefreshCw className="w-4 h-4" />
               <span>Coba Lagi</span>
@@ -466,42 +505,100 @@ export function FaceScanner({
           </div>
         )}
 
-        {cameraReady && !cameraError && (
-          <div className="absolute bottom-4 inset-x-3 flex justify-center">
-            <div
-              className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-xs sm:text-sm font-bold shadow-md transition ${toneBadgeClasses}`}
-            >
-              {!modelsReady ? (
-                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-              ) : statusTone === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-              ) : statusTone === 'error' ? (
-                <AlertCircle className="w-4 h-4 shrink-0" />
-              ) : (
-                <Sparkles className="w-4 h-4 shrink-0" />
-              )}
-              <span>{statusMessage}</span>
-            </div>
+        {/* Tombol Batal Melayang */}
+        <button
+          type="button"
+          onClick={onCancel}
+          className="absolute top-3 right-3 w-10 h-10 rounded-full bg-slate-900/60 hover:bg-slate-900/90 text-white flex items-center justify-center backdrop-blur-sm transition border border-white/20 active:scale-95"
+          title="Batal"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
+        {/* Status Badge Melayang di Bagian Bawah Kamera */}
+        <div className="absolute bottom-3 inset-x-3 pointer-events-none">
+          <div
+            className={`rounded-2xl px-4 py-2.5 backdrop-blur-md border text-center transition-all duration-200 shadow-md ${
+              statusTone === 'success'
+                ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-200'
+                : statusTone === 'ready'
+                ? 'bg-sky-950/80 border-sky-500/40 text-sky-200'
+                : statusTone === 'warn'
+                ? 'bg-amber-950/80 border-amber-500/40 text-amber-200'
+                : statusTone === 'error'
+                ? 'bg-rose-950/80 border-rose-500/40 text-rose-200'
+                : 'bg-slate-950/80 border-white/20 text-slate-200'
+            }`}
+          >
+            <div className="text-xs font-bold leading-snug">{statusMessage}</div>
+          </div>
+        </div>
+
+        {/* Debug Overlay (Khusus jika URL memiliki parameter ?debug=1) */}
+        {showDebug && (
+          <div className="absolute top-3 left-3 bg-slate-950/85 backdrop-blur-md p-2.5 rounded-xl border border-white/20 text-[10px] font-mono text-emerald-300 pointer-events-none space-y-0.5 z-10 max-w-[190px]">
+            <div className="font-bold text-amber-300">DEBUG OVERLAY</div>
+            <div>Face W: {debugMetrics.widthPx ?? 0}px</div>
+            <div>Yaw: {debugMetrics.yaw ?? 0} | Pit: {debugMetrics.pitch ?? 0}</div>
+            <div>Roll: {debugMetrics.rollDeg ?? 0}°</div>
+            {debugMetrics.cropMetrics && (
+              <>
+                <div>Lum: {debugMetrics.cropMetrics.brightness} (70-190)</div>
+                <div>L/R: {debugMetrics.cropMetrics.lrRatio} (0.6-1.6)</div>
+                <div>Clip: {debugMetrics.cropMetrics.clippedPct}% (&lt;8%)</div>
+                <div>Sharp: {debugMetrics.cropMetrics.sharpness} (&gt;60)</div>
+              </>
+            )}
+            <div>Score: {debugMetrics.lastScore?.toFixed(3) ?? '-'}</div>
+            <div>Margin: {debugMetrics.lastMargin?.toFixed(3) ?? '-'}</div>
           </div>
         )}
       </div>
 
-      {failCount >= 3 && (
-        <div className="px-4 py-3 bg-amber-50 border-t border-amber-200 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-xs text-amber-900 font-medium">
-            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>Gagal 3 kali? Pastikan cahaya terang atau daftar ulang wajah.</span>
+      {/* Tautan Bantuan Jika Gagal Scan Beberapa Kali */}
+      {failCount >= 3 && showEnrollHintLink && (
+        <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3.5 max-w-sm w-full text-center space-y-1.5 animate-fadeIn">
+          <div className="text-xs font-bold text-amber-900">
+            Wajah belum terdeteksi dengan tepat?
           </div>
-          {showEnrollHintLink && (
-            <Link
-              href="/absen/daftar-wajah"
-              className="rounded-lg bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 text-xs font-bold transition"
-            >
-              Daftar Wajah
-            </Link>
-          )}
+          <div className="text-[11px] text-amber-700 leading-relaxed">
+            Pastikan wajah terkena cahaya dengan merata dan lepas masker/topi. Anda juga dapat mendaftarkan wajah kembali.
+          </div>
+          <Link
+            href="/absen/daftar-wajah"
+            className="inline-flex items-center gap-1.5 text-xs font-extrabold text-primary-700 hover:underline pt-0.5"
+          >
+            <ScanFace className="w-3.5 h-3.5" />
+            <span>Ke Halaman Pendaftaran Wajah</span>
+          </Link>
         </div>
       )}
+
+      {/* Sheet Konfirmasi Identitas (Zona Confirm) */}
+      <ConfirmIdentitySheet
+        open={confirmOpen}
+        verificationId={confirmVerificationId}
+        subjectType={subjectType}
+        candidates={confirmCandidates}
+        onConfirmed={async (confirmedSubject) => {
+          setConfirmOpen(false);
+          setStatusTone('success');
+          setStatusMessage(`Terverifikasi: ${confirmedSubject.name}`);
+          await onResult({
+            verification_id: confirmVerificationId,
+            subject_type: subjectType,
+            subject_id: confirmedSubject.id,
+            name: confirmedSubject.name,
+            subtitle: confirmedSubject.subtitle,
+            code: confirmedSubject.code,
+          });
+        }}
+        onCancel={() => {
+          setConfirmOpen(false);
+          resetCaptureState();
+          cooldownUntilRef.current = Date.now() + 600;
+        }}
+      />
     </div>
   );
 }

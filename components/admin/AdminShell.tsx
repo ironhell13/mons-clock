@@ -18,6 +18,8 @@ import {
   ScanFace,
   Settings2,
   Shield,
+  ShieldAlert,
+  ShieldCheck,
   Tag,
   Truck,
   UserCheck,
@@ -83,9 +85,16 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: 'Pengaturan',
+    label: 'Biometrik Wajah',
     items: [
       { href: '/admin/wajah', label: 'Kelola Wajah', icon: ScanFace },
+      { href: '/admin/wajah/audit', label: 'Audit Kemiripan', icon: ShieldCheck },
+      { href: '/admin/wajah/review', label: 'Review Absensi', icon: ShieldAlert },
+    ],
+  },
+  {
+    label: 'Pengaturan',
+    items: [
       { href: '/admin/users', label: 'Manajemen User', icon: UserCog, superadminOnly: true },
     ],
   },

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Plus, ScanFace, Search, Shield, Trash2, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import type { SubjectType } from '@/types/database';
-import { invalidateFaceTemplatesCache } from '@/lib/face-cache';
 import { DynamicFaceEnrollView } from '@/components/face/DynamicFaceWidgets';
 import { Modal } from '@/components/ui/Modal';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -31,6 +30,9 @@ export function AdminFaceManagerClient() {
   const [enrollTarget, setEnrollTarget] = useState<SubjectRow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SubjectRow | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetPhrase, setResetPhrase] = useState('');
+  const [resetting, setResetting] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -81,7 +83,6 @@ export function AdminFaceManagerClient() {
         toast.error(json.error ?? 'Gagal menghapus template wajah.');
         return;
       }
-      invalidateFaceTemplatesCache(deleteTarget.subject_type);
       toast.success(`Template wajah ${deleteTarget.name} dihapus.`);
       setDeleteTarget(null);
       await loadData();
@@ -92,13 +93,55 @@ export function AdminFaceManagerClient() {
     }
   };
 
+  const handleResetAll = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (resetPhrase.trim() !== 'RESET') {
+      toast.error('Ketik "RESET" dengan huruf besar untuk konfirmasi.');
+      return;
+    }
+    setResetting(true);
+    try {
+      const res = await fetch('/api/face/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm_phrase: 'RESET' }),
+      });
+      const json = (await res.json()) as { message?: string; error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? 'Gagal me-reset template wajah.');
+        return;
+      }
+      toast.success(json.message ?? 'Semua template wajah berhasil di-reset.');
+      setResetModalOpen(false);
+      setResetPhrase('');
+      await loadData();
+    } catch {
+      toast.error('Gagal terhubung ke server.');
+    } finally {
+      setResetting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-extrabold text-ink">Kelola Pendaftaran Wajah</h1>
-        <p className="text-sm text-ink-muted mt-0.5">
-          Daftarkan wajah karyawan dan pengawal lewat webcam PC, tambah sampel, atau reset template.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-extrabold text-ink">Kelola Pendaftaran Wajah</h1>
+          <p className="text-sm text-ink-muted mt-0.5">
+            Daftarkan wajah karyawan dan pengawal lewat webcam PC (pipeline v2), tambah sampel, atau reset template.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setResetPhrase('');
+            setResetModalOpen(true);
+          }}
+          className="inline-flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/10 hover:bg-danger/20 text-danger px-4 py-2.5 text-xs font-bold transition"
+        >
+          <Trash2 className="w-4 h-4" />
+          <span>Reset Semua Template Wajah</span>
+        </button>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -271,6 +314,56 @@ export function AdminFaceManagerClient() {
         message={`Seluruh sampel wajah milik "${deleteTarget?.name ?? ''}" akan dihapus. Orang ini harus mendaftarkan wajah ulang sebelum bisa absen.`}
         confirmLabel="Hapus Semua Template"
       />
+
+      {/* Modal Konfirmasi Reset Semua Template Wajah */}
+      <Modal
+        open={resetModalOpen}
+        onClose={() => {
+          if (!resetting) setResetModalOpen(false);
+        }}
+        title="Reset Semua Template Wajah"
+        maxWidthClass="max-w-md"
+      >
+        <form onSubmit={handleResetAll} className="space-y-4">
+          <div className="rounded-xl bg-danger/10 border border-danger/30 p-3.5 text-xs text-danger leading-relaxed">
+            <p className="font-bold mb-1">Tindakan ini tidak dapat dibatalkan!</p>
+            Seluruh data template biometrik wajah semua karyawan dan pengawal akan dihapus secara permanen.
+            Setelah ini, semua orang harus melakukan pendaftaran ulang menggunakan pipeline v2 (5 pose).
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-ink mb-1.5">
+              Ketik <span className="text-danger font-mono font-black">RESET</span> untuk mengonfirmasi:
+            </label>
+            <input
+              type="text"
+              value={resetPhrase}
+              onChange={(e) => setResetPhrase(e.target.value)}
+              placeholder="RESET"
+              disabled={resetting}
+              className="w-full rounded-xl border border-border-sky bg-page px-3.5 py-2.5 text-sm font-mono tracking-widest text-center focus:border-danger focus:bg-white focus:outline-none"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              disabled={resetting}
+              onClick={() => setResetModalOpen(false)}
+              className="rounded-xl border border-border-sky bg-white px-4 py-2.5 text-xs font-bold text-ink hover:bg-page"
+            >
+              Batal
+            </button>
+            <button
+              type="submit"
+              disabled={resetting || resetPhrase.trim() !== 'RESET'}
+              className="inline-flex items-center gap-2 rounded-xl bg-danger hover:bg-red-700 disabled:opacity-50 text-white px-4 py-2.5 text-xs font-bold transition"
+            >
+              {resetting ? 'Memproses...' : 'Ya, Hapus Semua Template'}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

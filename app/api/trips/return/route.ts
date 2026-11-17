@@ -3,6 +3,7 @@ import { requireApiRole } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { tripReturnSchema } from '@/lib/validators';
 import { verifyScanTimestampToken } from '@/lib/server-token';
+import { consumeVerification } from '@/lib/face-verify';
 import { formatDurationHHMM, formatWibDateFull, formatWibTimeSeconds } from '@/lib/time';
 
 export async function POST(req: NextRequest) {
@@ -20,8 +21,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { trip_id, scanned_employee_id, km_end } = parsed.data;
+  const { trip_id, km_end, verification_id } = parsed.data;
+  let { scanned_employee_id } = parsed.data;
   const adminClient = createAdminClient();
+
+  if (verification_id) {
+    const vRes = await consumeVerification(adminClient, {
+      verificationId: verification_id,
+      kioskUserId: auth.session.userId,
+      purpose: 'trip_staff1',
+      consume: true,
+    });
+    if (!vRes.ok) {
+      return NextResponse.json({ error: vRes.error }, { status: vRes.status });
+    }
+    scanned_employee_id = vRes.subject.id;
+  }
+
+  if (!scanned_employee_id) {
+    return NextResponse.json({ error: 'Identitas karyawan verifikasi wajib ada.' }, { status: 400 });
+  }
 
   const { data: existing, error: findErr } = await adminClient
     .from('trips')

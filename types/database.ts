@@ -73,12 +73,62 @@ export interface Vendor {
   created_at: string;
 }
 
+export type DecisionZone = 'accept' | 'confirm' | 'reject' | 'manual';
+
+export type VerificationPurpose =
+  | 'absen'
+  | 'trip_staff1'
+  | 'trip_staff2'
+  | 'trip_escort';
+
+export interface FaceVerificationCandidate {
+  id: string;
+  name: string;
+  subtitle: string;
+  code?: string;
+  score?: number;
+}
+
+export interface FaceVerification {
+  id: string;
+  kiosk_user_id: string;
+  purpose: VerificationPurpose;
+  subject_type: SubjectType;
+  subject_id: string | null;
+  zone: 'accept' | 'confirm' | 'reject';
+  score: number | null;
+  second_subject_id: string | null;
+  second_score: number | null;
+  margin: number | null;
+  frames_used: number | null;
+  candidates: FaceVerificationCandidate[] | null;
+  confirm_attempts: number;
+  confirmed_method: 'no_id_last4' | 'rfid' | 'manual_select' | null;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+}
+
+export interface FaceLookalikeFlag {
+  id: string;
+  subject_type: SubjectType;
+  subject_a: string;
+  subject_b: string;
+  created_by: string | null;
+  created_at: string;
+  subject_a_name?: string;
+  subject_b_name?: string;
+}
+
 export interface FaceTemplate {
   id: string;
   subject_type: SubjectType;
   employee_id: string | null;
   escort_id: string | null;
   descriptor: number[];
+  embedding?: number[] | null;
+  pipeline_version?: number;
+  quality?: Record<string, unknown> | null;
   sample_label: string;
   created_at: string;
 }
@@ -103,6 +153,15 @@ export interface AttendanceEvent {
   occurred_at: string;
   match_distance: number | null;
   created_at: string;
+  verification_id?: string | null;
+  second_subject_id?: string | null;
+  second_distance?: number | null;
+  margin?: number | null;
+  decision_zone?: DecisionZone | null;
+  frames_used?: number | null;
+  before_state?: Record<string, unknown> | null;
+  voided_at?: string | null;
+  void_reason?: string | null;
 }
 
 export interface Trip {

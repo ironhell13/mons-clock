@@ -4,7 +4,7 @@ import { use, useCallback, useState } from 'react';
 import Link from 'next/link';
 import { notFound, useRouter } from 'next/navigation';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import type { FaceMatchSuccess } from '@/lib/face';
+import type { FaceScanSuccessPayload } from '@/components/face/FaceScanner';
 import { DynamicFaceScanner } from '@/components/face/DynamicFaceWidgets';
 import {
   AttendanceSuccessModal,
@@ -44,8 +44,10 @@ export default function AbsenModePage({
 
   const meta = MODE_LABELS[mode];
   const [submitting, setSubmitting] = useState(false);
+  const [voiding, setVoiding] = useState(false);
   const [recognizedName, setRecognizedName] = useState<string | null>(null);
   const [successData, setSuccessData] = useState<{
+    eventId?: string;
     name: string;
     position: string;
     dateLabel: string;
@@ -61,7 +63,7 @@ export default function AbsenModePage({
   } | null>(null);
 
   const handleFaceMatched = useCallback(
-    async (match: FaceMatchSuccess) => {
+    async (match: FaceScanSuccessPayload) => {
       if (submitting || successData || warningData) return;
       setSubmitting(true);
       setRecognizedName(match.name);
@@ -70,15 +72,15 @@ export default function AbsenModePage({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            employee_id: match.subject_id,
+            verification_id: match.verification_id,
             mode,
-            match_distance: match.distance,
           }),
         });
         const json = (await res.json()) as {
           success?: boolean;
           duplicate?: boolean;
           error?: string;
+          event_id?: string;
           employeeName?: string;
           employee?: { name: string; position: string };
           formattedDate?: string;
@@ -112,6 +114,7 @@ export default function AbsenModePage({
         }
 
         setSuccessData({
+          eventId: json.event_id,
           name: json.employee?.name ?? match.name,
           position: json.employee?.position ?? match.subtitle,
           dateLabel: json.formattedDate ?? '',
@@ -135,6 +138,41 @@ export default function AbsenModePage({
     },
     [meta.title, mode, submitting, successData, warningData]
   );
+
+  const handleVoidAttendance = useCallback(async () => {
+    if (!successData?.eventId || voiding) return;
+    setVoiding(true);
+    try {
+      const res = await fetch('/api/absen/void', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event_id: successData.eventId,
+          reason: 'Dibatalkan oleh karyawan via tombol "Bukan saya" di kiosk tablet',
+        }),
+      });
+      const json = (await res.json()) as { error?: string; success?: boolean; message?: string };
+      if (!res.ok) {
+        setWarningData({
+          title: 'Gagal Membatalkan',
+          message: json.error ?? 'Gagal membatalkan absensi.',
+        });
+        return;
+      }
+      setSuccessData(null);
+      setWarningData({
+        title: 'Absensi Dibatalkan',
+        message: 'Absensi telah berhasil dibatalkan. Silakan posisikan wajah kembali untuk absen ulang.',
+      });
+    } catch {
+      setWarningData({
+        title: 'Gangguan Jaringan',
+        message: 'Gagal menghubungi server untuk membatalkan absensi.',
+      });
+    } finally {
+      setVoiding(false);
+    }
+  }, [successData?.eventId, voiding]);
 
   const handleDone = useCallback(() => {
     setSuccessData(null);
@@ -179,6 +217,9 @@ export default function AbsenModePage({
         timeLabel={successData?.timeLabel ?? ''}
         extraRows={successData?.extraRows}
         onClose={handleDone}
+        onVoid={handleVoidAttendance}
+        isVoiding={voiding}
+        autoCloseSeconds={8}
       />
 
       <AttendanceWarningModal
@@ -194,4 +235,3 @@ export default function AbsenModePage({
     </div>
   );
 }
-

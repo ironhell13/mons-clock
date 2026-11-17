@@ -2,16 +2,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { requireApiRole } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { faceEnrollSchema } from '@/lib/validators';
-
-function euclideanDist(a: number[], b: number[]): number {
-  if (a.length !== b.length) return Number.POSITIVE_INFINITY;
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) {
-    const d = a[i] - b[i];
-    sum += d * d;
-  }
-  return Math.sqrt(sum);
-}
+import { getActiveFaceConfig } from '@/lib/face-config';
+import { matchFacesServer } from '@/lib/face-verify';
+import { isLookalikePair, type LookalikePair } from '@/lib/face-decision';
 
 export async function POST(req: NextRequest) {
   const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
@@ -29,6 +22,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { subject_type, subject_id, pin, samples } = parsed.data;
+  const config = getActiveFaceConfig();
 
   // Di perangkat tablet (role absen), wajib verifikasi PIN admin
   if (auth.session.profile.role === 'absen') {
@@ -62,35 +56,50 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Cek kemiripan ketat (0.46) terhadap orang lain yang sudah terdaftar agar tidak tertukar
-  const envThreshold = Number(process.env.NEXT_PUBLIC_FACE_THRESHOLD || '0.42') || 0.42;
-  const duplicateGuardThreshold = Math.max(0.46, envThreshold * 0.92);
-  const col = subject_type === 'employee' ? 'employee_id' : 'escort_id';
+  // Ambil daftar pasangan wajah mirip (lookalike flags) yang sudah disetujui admin
+  const { data: flaggedRows } = await adminClient
+    .from('face_lookalike_flags')
+    .select('subject_a, subject_b')
+    .eq('subject_type', subject_type);
 
-  const { data: otherTemplates } = await adminClient
-    .from('face_templates')
-    .select('employee_id, escort_id, descriptor')
-    .eq('subject_type', subject_type)
-    .neq(col, subject_id);
+  const flaggedPairs: LookalikePair[] = (flaggedRows ?? []).map((r) => ({
+    subject_a: r.subject_a,
+    subject_b: r.subject_b,
+  }));
 
-  if (otherTemplates && otherTemplates.length > 0) {
-    for (const sample of samples) {
-      for (const existing of otherTemplates) {
-        const dist = euclideanDist(sample.descriptor, existing.descriptor as number[]);
-        if (dist < duplicateGuardThreshold) {
-          const otherId = existing[col];
+  // === Penjaga Kemiripan Silang (Cross-Person Similarity Guard) ===
+  // Periksa setiap sampel terhadap template orang LAIN pada subject_type yang sama
+  for (const sample of samples) {
+    const matches = await matchFacesServer(adminClient, sample.descriptor, subject_type);
+    const otherMatches = matches.filter((m) => m.subject_id !== subject_id);
+
+    if (otherMatches.length > 0) {
+      const closest = otherMatches[0];
+      // Jika skor d_top2 lebih kecil dari ENROLL_LOOKALIKE_GUARD (0.50)
+      if (closest.d_top2 < config.ENROLL_LOOKALIKE_GUARD) {
+        const isFlagged = isLookalikePair(subject_id, closest.subject_id, flaggedPairs);
+
+        // Jika belum ditandai sebagai pasangan wajah mirip oleh admin, tolak pendaftaran
+        if (!isFlagged) {
           let otherName = 'orang lain';
-          if (otherId) {
-            const { data: otherRow } = await adminClient
-              .from(targetTable)
-              .select('name')
-              .eq('id', otherId)
-              .single();
-            if (otherRow?.name) otherName = otherRow.name;
+          const { data: otherRow } = await adminClient
+            .from(targetTable)
+            .select('name')
+            .eq('id', closest.subject_id)
+            .single();
+
+          if (otherRow?.name) {
+            otherName = otherRow.name;
           }
+
           return NextResponse.json(
             {
-              error: `Wajah terlalu mirip dengan profil "${otherName}" yang sudah terdaftar. Pastikan nama yang dipilih sudah benar.`,
+              error: `Wajah terdeteksi sangat mirip dengan "${otherName}" (skor kemiripan: ${closest.d_top2.toFixed(3)}). Untuk mencegah salah absen, pastikan pencahayaan merata dan wajah tidak miring/tertutup. Jika memang bersaudara/mirip, admin dapat menandainya di Halaman Audit Kemiripan.`,
+              similar_subject: {
+                id: closest.subject_id,
+                name: otherName,
+                score: closest.d_top2,
+              },
             },
             { status: 409 }
           );
@@ -99,12 +108,39 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // === Batasi MAX_SAMPLES_PER_SUBJECT ===
+  // Cek jumlah sampel yang sudah ada untuk subjek ini
+  const foreignKey = subject_type === 'employee' ? 'employee_id' : 'escort_id';
+  const { data: existingTemplates } = await adminClient
+    .from('face_templates')
+    .select('id, created_at')
+    .eq('subject_type', subject_type)
+    .eq(foreignKey, subject_id)
+    .order('created_at', { ascending: true });
+
+  const currentCount = existingTemplates?.length ?? 0;
+  const newCount = samples.length;
+  const totalAfterInsert = currentCount + newCount;
+
+  if (totalAfterInsert > config.MAX_SAMPLES_PER_SUBJECT && existingTemplates) {
+    const pruneCount = totalAfterInsert - config.MAX_SAMPLES_PER_SUBJECT;
+    const toDeleteIds = existingTemplates.slice(0, pruneCount).map((t) => t.id);
+
+    if (toDeleteIds.length > 0) {
+      await adminClient.from('face_templates').delete().in('id', toDeleteIds);
+    }
+  }
+
+  // === Simpan Template Baru (Pipeline Version 2) ===
   const insertPayload = samples.map((s) => ({
     subject_type,
     employee_id: subject_type === 'employee' ? subject_id : null,
     escort_id: subject_type === 'escort' ? subject_id : null,
     descriptor: s.descriptor,
+    embedding: `[${s.descriptor.join(',')}]`,
     sample_label: s.sample_label,
+    pipeline_version: 2,
+    quality: s.quality ?? null,
   }));
 
   const { error: insertErr } = await adminClient.from('face_templates').insert(insertPayload);
@@ -112,15 +148,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: insertErr.message }, { status: 400 });
   }
 
+  // Catat ke audit_logs
   await adminClient.from('audit_logs').insert({
     user_id: auth.session.userId,
-    action: 'enroll_face',
+    action: 'enroll_face_v2',
     table_name: 'face_templates',
     record_id: subject_id,
     payload: {
       subject_type,
       subject_name: subjectRow.name,
       sample_count: samples.length,
+      pipeline_version: 2,
     },
   });
 
@@ -130,4 +168,3 @@ export async function POST(req: NextRequest) {
     name: subjectRow.name,
   });
 }
-

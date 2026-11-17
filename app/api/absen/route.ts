@@ -1,7 +1,8 @@
-import { after, NextResponse, type NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { requireApiRole } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { attendanceScanSchema } from '@/lib/validators';
+import { consumeVerification } from '@/lib/face-verify';
 import {
   formatMinutesHuman,
   formatWibDateFull,
@@ -11,7 +12,7 @@ import {
 } from '@/lib/time';
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['absen']);
+  const auth = await requireApiRole(['absen', 'admin', 'superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -25,8 +26,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { employee_id, mode, match_distance } = parsed.data;
+  const { verification_id, mode } = parsed.data;
   const adminClient = createAdminClient();
+
+  // 1. Verifikasi Identitas Secara Terpusat di Server (Single-Use Token)
+  const verifRes = await consumeVerification(adminClient, {
+    verificationId: verification_id,
+    kioskUserId: auth.session.userId,
+    purpose: 'absen',
+    consume: true,
+  });
+
+  if (!verifRes.ok) {
+    return NextResponse.json({ error: verifRes.error }, { status: verifRes.status });
+  }
+
+  const verification = verifRes.verification;
+  const employee = verifRes.subject;
+  const employee_id = employee.id;
 
   // Selalu gunakan waktu server (UTC) agar jam perangkat tidak bisa dimanipulasi
   const now = new Date();
@@ -34,43 +51,34 @@ export async function POST(req: NextRequest) {
   const todayWib = getWibDateString(now);
   const twentyFourHoursAgoIso = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
 
-  // Jalankan query karyawan + cek kehadiran secara paralel untuk respon lebih cepat
-  const [empRes, attendanceLookup] = await Promise.all([
-    adminClient
-      .from('employees')
-      .select('id, name, position, is_active')
-      .eq('id', employee_id)
-      .single(),
-    mode === 'masuk'
-      ? adminClient
-          .from('attendance')
-          .select('id, masuk_at')
-          .eq('employee_id', employee_id)
-          .eq('work_date', todayWib)
-          .maybeSingle()
-      : adminClient
-          .from('attendance')
-          .select('id, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
-          .eq('employee_id', employee_id)
-          .not('masuk_at', 'is', null)
-          .is('pulang_at', null)
-          .gte('masuk_at', twentyFourHoursAgoIso)
-          .order('masuk_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-  ]);
+  // 2. Cek status absensi aktif di database
+  const attendanceLookup = await (mode === 'masuk'
+    ? adminClient
+        .from('attendance')
+        .select('id, employee_id, work_date, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
+        .eq('employee_id', employee_id)
+        .eq('work_date', todayWib)
+        .maybeSingle()
+    : adminClient
+        .from('attendance')
+        .select('id, employee_id, work_date, masuk_at, istirahat_at, istirahat_kembali_at, pulang_at')
+        .eq('employee_id', employee_id)
+        .not('masuk_at', 'is', null)
+        .is('pulang_at', null)
+        .gte('masuk_at', twentyFourHoursAgoIso)
+        .order('masuk_at', { ascending: false })
+        .limit(1)
+        .maybeSingle());
 
-  if (empRes.error || !empRes.data || !empRes.data.is_active) {
-    return NextResponse.json(
-      { error: 'Data karyawan tidak ditemukan atau tidak aktif.' },
-      { status: 404 }
-    );
-  }
-
-  const employee = empRes.data;
-
+  // === MODE: MASUK ===
   if (mode === 'masuk') {
-    const existingToday = attendanceLookup.data as { id: string; masuk_at: string | null } | null;
+    const existingToday = attendanceLookup.data as {
+      id: string;
+      masuk_at: string | null;
+      istirahat_at: string | null;
+      istirahat_kembali_at: string | null;
+      pulang_at: string | null;
+    } | null;
 
     if (existingToday?.masuk_at) {
       return NextResponse.json(
@@ -100,26 +108,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: upsertErr.message }, { status: 500 });
     }
 
-    after(async () => {
-      await adminClient.from('attendance_events').insert({
+    const { data: insertedEvent } = await adminClient
+      .from('attendance_events')
+      .insert({
         employee_id,
         attendance_id: upserted.id,
         event_type: 'masuk',
         occurred_at: nowIso,
-        match_distance,
-      });
-    });
+        match_distance: verification.score,
+        verification_id: verification.id,
+        second_subject_id: verification.second_subject_id,
+        second_distance: verification.second_score,
+        margin: verification.margin,
+        decision_zone: verification.zone,
+        frames_used: verification.frames_used,
+        before_state: existingToday ?? null,
+      })
+      .select('id')
+      .single();
 
     return NextResponse.json({
       success: true,
+      event_id: insertedEvent?.id,
       mode,
-      employee: { id: employee.id, name: employee.name, position: employee.position },
+      employee: { id: employee.id, name: employee.name, position: employee.subtitle },
       occurredAt: nowIso,
       formattedDate: formatWibDateFull(now),
       formattedTime: formatWibTimeSeconds(now),
     });
   }
 
+  // === MODE: ISTIRAHAT (MULAI & KEMBALI) ===
   if (mode === 'istirahat' || mode === 'istirahat_kembali') {
     const activeShift = attendanceLookup.data as {
       id: string;
@@ -141,6 +160,7 @@ export async function POST(req: NextRequest) {
 
     // 1. Belum absen istirahat sama sekali -> Catat MULAI ISTIRAHAT
     if (!activeShift.istirahat_at) {
+      const beforeState = { ...activeShift };
       const { error: updateErr } = await adminClient
         .from('attendance')
         .update({ istirahat_at: nowIso })
@@ -150,23 +170,33 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: updateErr.message }, { status: 500 });
       }
 
-      after(async () => {
-        await adminClient.from('attendance_events').insert({
+      const { data: insertedEvent } = await adminClient
+        .from('attendance_events')
+        .insert({
           employee_id,
           attendance_id: activeShift.id,
           event_type: 'istirahat',
           occurred_at: nowIso,
-          match_distance,
-        });
-      });
+          match_distance: verification.score,
+          verification_id: verification.id,
+          second_subject_id: verification.second_subject_id,
+          second_distance: verification.second_score,
+          margin: verification.margin,
+          decision_zone: verification.zone,
+          frames_used: verification.frames_used,
+          before_state: beforeState,
+        })
+        .select('id')
+        .single();
 
       return NextResponse.json({
         success: true,
-        mode,
+        event_id: insertedEvent?.id,
+        mode: 'istirahat',
         action: 'mulai',
         title: 'Mulai Istirahat Berhasil',
         statusMessage: 'Selamat beristirahat',
-        employee: { id: employee.id, name: employee.name, position: employee.position },
+        employee: { id: employee.id, name: employee.name, position: employee.subtitle },
         occurredAt: nowIso,
         formattedDate: formatWibDateFull(now),
         formattedTime: formatWibTimeSeconds(now),
@@ -175,9 +205,10 @@ export async function POST(req: NextRequest) {
 
     // 2. Sudah mulai istirahat tapi belum kembali -> Catat KEMBALI DARI ISTIRAHAT
     if (activeShift.istirahat_at && !activeShift.istirahat_kembali_at) {
-      // Cek proteksi double scan (kurang dari 60 detik)
       const startMillis = new Date(activeShift.istirahat_at).getTime();
       const diffSeconds = Math.floor((now.getTime() - startMillis) / 1000);
+
+      // Cek proteksi double scan (kurang dari 60 detik)
       if (diffSeconds < 60) {
         return NextResponse.json(
           {
@@ -189,6 +220,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      const beforeState = { ...activeShift };
       const diffMinutes = Math.max(1, Math.round((now.getTime() - startMillis) / (60 * 1000)));
       const durationLabel = formatMinutesHuman(diffMinutes);
 
@@ -201,26 +233,36 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: updateErr.message }, { status: 500 });
       }
 
-      after(async () => {
-        await adminClient.from('attendance_events').insert({
+      const { data: insertedEvent } = await adminClient
+        .from('attendance_events')
+        .insert({
           employee_id,
           attendance_id: activeShift.id,
           event_type: 'istirahat_kembali',
           occurred_at: nowIso,
-          match_distance,
-        });
-      });
+          match_distance: verification.score,
+          verification_id: verification.id,
+          second_subject_id: verification.second_subject_id,
+          second_distance: verification.second_score,
+          margin: verification.margin,
+          decision_zone: verification.zone,
+          frames_used: verification.frames_used,
+          before_state: beforeState,
+        })
+        .select('id')
+        .single();
 
       return NextResponse.json({
         success: true,
-        mode,
+        event_id: insertedEvent?.id,
+        mode: 'istirahat',
         action: 'kembali',
         title: 'Kembali Istirahat Berhasil',
         statusMessage: 'Selamat bertugas kembali',
         breakStartFormatted: `${formatWibTimeShort(activeShift.istirahat_at)} WIB`,
         durationMinutes: diffMinutes,
         durationLabel,
-        employee: { id: employee.id, name: employee.name, position: employee.position },
+        employee: { id: employee.id, name: employee.name, position: employee.subtitle },
         occurredAt: nowIso,
         formattedDate: formatWibDateFull(now),
         formattedTime: formatWibTimeSeconds(now),
@@ -242,7 +284,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // mode === 'pulang' (mendukung shift melewati tengah malam hingga 24 jam ke belakang)
+  // === MODE: PULANG ===
   const openShift = attendanceLookup.data as {
     id: string;
     masuk_at: string | null;
@@ -277,6 +319,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const beforeState = { ...openShift };
   const { error: pulangErr } = await adminClient
     .from('attendance')
     .update({ pulang_at: nowIso })
@@ -286,20 +329,30 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: pulangErr.message }, { status: 500 });
   }
 
-  after(async () => {
-    await adminClient.from('attendance_events').insert({
+  const { data: insertedEvent } = await adminClient
+    .from('attendance_events')
+    .insert({
       employee_id,
       attendance_id: openShift.id,
       event_type: 'pulang',
       occurred_at: nowIso,
-      match_distance,
-    });
-  });
+      match_distance: verification.score,
+      verification_id: verification.id,
+      second_subject_id: verification.second_subject_id,
+      second_distance: verification.second_score,
+      margin: verification.margin,
+      decision_zone: verification.zone,
+      frames_used: verification.frames_used,
+      before_state: beforeState,
+    })
+    .select('id')
+    .single();
 
   return NextResponse.json({
     success: true,
+    event_id: insertedEvent?.id,
     mode,
-    employee: { id: employee.id, name: employee.name, position: employee.position },
+    employee: { id: employee.id, name: employee.name, position: employee.subtitle },
     occurredAt: nowIso,
     formattedDate: formatWibDateFull(now),
     formattedTime: formatWibTimeSeconds(now),

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { requireApiRole } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { tripDepartSchema } from '@/lib/validators';
+import { consumeVerification } from '@/lib/face-verify';
 import { verifyScanTimestampToken } from '@/lib/server-token';
 import { formatWibDateFull, formatWibTimeSeconds } from '@/lib/time';
 
@@ -20,12 +21,56 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { trip_type, staff1_id, staff2_id, escort_id, plate, km_start, area_id, run_code } =
-    parsed.data;
-  const scanToken = typeof body.scanToken === 'string' ? body.scanToken : undefined;
-  const departAt = verifyScanTimestampToken(scanToken, staff1_id, trip_type);
+  const { trip_type, plate, km_start, area_id, run_code } = parsed.data;
+  let { staff1_id, staff2_id, escort_id } = parsed.data;
 
   const adminClient = createAdminClient();
+
+  if (parsed.data.staff1_verification_id) {
+    const v1 = await consumeVerification(adminClient, {
+      verificationId: parsed.data.staff1_verification_id,
+      kioskUserId: auth.session.userId,
+      purpose: 'trip_staff1',
+      consume: true,
+    });
+    if (!v1.ok) {
+      return NextResponse.json({ error: `Staff 1: ${v1.error}` }, { status: v1.status });
+    }
+    staff1_id = v1.subject.id;
+  }
+
+  if (parsed.data.staff2_verification_id) {
+    const v2 = await consumeVerification(adminClient, {
+      verificationId: parsed.data.staff2_verification_id,
+      kioskUserId: auth.session.userId,
+      purpose: 'trip_staff2',
+      consume: true,
+    });
+    if (!v2.ok) {
+      return NextResponse.json({ error: `Staff 2: ${v2.error}` }, { status: v2.status });
+    }
+    staff2_id = v2.subject.id;
+  }
+
+  if (parsed.data.escort_verification_id) {
+    const ve = await consumeVerification(adminClient, {
+      verificationId: parsed.data.escort_verification_id,
+      kioskUserId: auth.session.userId,
+      purpose: 'trip_escort',
+      consume: true,
+    });
+    if (!ve.ok) {
+      return NextResponse.json({ error: `Pengawal: ${ve.error}` }, { status: ve.status });
+    }
+    escort_id = ve.subject.id;
+  }
+
+  if (!staff1_id) {
+    return NextResponse.json({ error: 'Staff 1 wajib diverifikasi.' }, { status: 400 });
+  }
+
+  const scanToken = typeof body.scanToken === 'string' ? body.scanToken : undefined;
+  const departAt = verifyScanTimestampToken(scanToken, staff1_id, trip_type);
 
   // Jalankan seluruh pengecekan konflik dan referensi secara paralel
   const staffIds = staff2_id ? [staff1_id, staff2_id] : [staff1_id];
