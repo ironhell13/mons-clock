@@ -41,8 +41,8 @@ export interface FaceConfig {
 export const FACE_CONFIG: FaceConfig = {
   // === Kualitas Capture di Tablet ===
   MIN_FACE_PX: 140, // Lebar wajah minimum dalam piksel video sumber (bukan rasio)
-  MAX_ABS_YAW: 0.10, // Toleransi hadap kiri/kanan saat verifikasi
-  MAX_ABS_PITCH_DELTA: 0.10, // Selisih dari pitch frontal hasil kalibrasi
+  MAX_ABS_YAW: 0.18, // Toleransi hadap kiri/kanan saat verifikasi (~10 derajat, alami & nyaman)
+  MAX_ABS_PITCH_DELTA: 0.18, // Selisih dari pitch frontal hasil kalibrasi (~10 derajat)
   MAX_ABS_ROLL_DEG: 12, // Kemiringan kepala maksimum (derajat)
   BRIGHTNESS_RANGE: [70, 190], // Rata-rata luminance crop wajah (0-255)
   LR_BRIGHTNESS_RATIO: [0.6, 1.6], // Rasio luminance kiri/kanan (deteksi backlight/bayangan)
@@ -59,8 +59,8 @@ export const FACE_CONFIG: FaceConfig = {
   CANDIDATE_WINDOW: 0.10, // Kandidat dengan skor <= S1 + window ditawarkan di zona confirm
 
   // === Pendaftaran Wajah (Enrollment) ===
-  ENROLL_SAMPLES: 5, // 5 pose: Lurus, Sedikit Kiri, Sedikit Kanan, Mendongak, Menunduk
-  ENROLL_FRAMES_PER_SAMPLE: 3, // Jumlah frame yang dirata-ratakan per pose
+  ENROLL_SAMPLES: 3, // 3 sampel berkualitas tinggi (Cukup Hadap Kamera, cepat & tidak repot)
+  ENROLL_FRAMES_PER_SAMPLE: 2, // Jumlah frame yang dirata-ratakan per sampel
   ENROLL_MAX_OUTLIER_DIST: 0.35, // Jarak maksimum sampel ke centroid dirinya sendiri
   ENROLL_LOOKALIKE_GUARD: 0.50, // Skor ke orang lain di bawah nilai ini akan ditolak/diberi flag mirip
   MAX_SAMPLES_PER_SUBJECT: 12, // Batas maksimum sampel per orang

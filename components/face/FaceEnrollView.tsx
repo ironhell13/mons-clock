@@ -37,33 +37,21 @@ interface EnrollmentStep {
 const ENROLLMENT_STEPS: EnrollmentStep[] = [
   {
     key: 'lurus',
-    label: 'Lurus',
-    instruction: 'Hadap lurus ke kamera',
-    checkPose: (yaw, pitchDelta) => Math.abs(yaw) <= 0.10 && Math.abs(pitchDelta) <= 0.10,
+    label: 'Hadap Kamera',
+    instruction: 'Posisikan wajah di dalam oval dan hadap ke kamera',
+    checkPose: (yaw, pitchDelta) => Math.abs(yaw) <= 0.18 && Math.abs(pitchDelta) <= 0.18,
   },
   {
-    key: 'kiri',
-    label: 'Sedikit Kiri',
-    instruction: 'Tolehkan wajah sedikit ke kiri (~15°)',
-    checkPose: (yaw) => yaw >= 0.12 && yaw <= 0.35,
+    key: 'rileks',
+    label: 'Tahan Posisi',
+    instruction: 'Tahan posisi dengan santai dan rileks...',
+    checkPose: (yaw, pitchDelta) => Math.abs(yaw) <= 0.18 && Math.abs(pitchDelta) <= 0.18,
   },
   {
-    key: 'kanan',
-    label: 'Sedikit Kanan',
-    instruction: 'Tolehkan wajah sedikit ke kanan (~15°)',
-    checkPose: (yaw) => yaw <= -0.12 && yaw >= -0.35,
-  },
-  {
-    key: 'atas',
-    label: 'Mendongak',
-    instruction: 'Dongakkan kepala sedikit ke atas',
-    checkPose: (_yaw, pitchDelta) => pitchDelta >= 0.10 && pitchDelta <= 0.28,
-  },
-  {
-    key: 'bawah',
-    label: 'Menunduk',
-    instruction: 'Tundukkan kepala sedikit ke bawah',
-    checkPose: (_yaw, pitchDelta) => pitchDelta <= -0.10 && pitchDelta >= -0.28,
+    key: 'verifikasi',
+    label: 'Verifikasi',
+    instruction: 'Satu detik lagi, hampir selesai...',
+    checkPose: (yaw, pitchDelta) => Math.abs(yaw) <= 0.18 && Math.abs(pitchDelta) <= 0.18,
   },
 ];
 
@@ -140,9 +128,9 @@ export function FaceEnrollView({
       const consistency = checkInternalConsistency(collected, FACE_CONFIG.ENROLL_MAX_OUTLIER_DIST);
       if (!consistency.ok) {
         const worstIdx = consistency.outlierIndices[0] ?? 0;
-        const outlierStep = ENROLLMENT_STEPS[worstIdx];
+        const outlierStep = ENROLLMENT_STEPS[worstIdx] ?? ENROLLMENT_STEPS[0];
         toast.warning(
-          `Pose "${outlierStep.label}" kurang konsisten dengan pose lainnya. Mengulang pose tersebut.`
+          `Sampel "${outlierStep.label}" kurang konsisten dengan sampel lainnya. Mengulang pengambilan sampel.`
         );
         // Hapus sampel outlier dan kembali ke step tersebut
         const remaining = collected.filter((_, idx) => idx !== worstIdx);
@@ -183,7 +171,7 @@ export function FaceEnrollView({
           return;
         }
 
-        toast.success(`Berhasil mendaftarkan 5 sampel wajah v2 untuk ${subjectName}.`);
+        toast.success(`Berhasil mendaftarkan ${collected.length} sampel wajah v2 untuk ${subjectName}.`);
         stopCamera();
         onSuccess(json.inserted ?? collected.length);
       } catch {
@@ -194,83 +182,89 @@ export function FaceEnrollView({
     [onSuccess, pin, stopCamera, subjectId, subjectName, subjectType]
   );
 
-  const captureCurrentStep = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video || capturingRef.current || saving || !lastBoxRef.current) return;
+  const captureCurrentStep = useCallback(
+    async (force = false) => {
+      const video = videoRef.current;
+      if (!video || capturingRef.current || saving || !lastBoxRef.current) return;
 
-    capturingRef.current = true;
-    try {
-      const ext = await extractFaceDescriptor(video, lastBoxRef.current);
-      if (!ext.descriptor) {
-        setStatusMessage(ext.reason ?? 'Posisikan wajah lebih jelas & stabil.');
-        return;
-      }
-
-      const frames = [...currentStepFramesRef.current, { descriptor: ext.descriptor, metrics: ext.metrics }];
-      currentStepFramesRef.current = frames;
-      setSubFrameCount(frames.length);
-
-      // Jika belum mencapai ENROLL_FRAMES_PER_SAMPLE (3 frame)
-      if (frames.length < FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE) {
-        setStatusMessage(`Tahan posisi... (${frames.length}/${FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE})`);
-        lastCaptureAtRef.current = Date.now();
-        return;
-      }
-
-      // Rata-ratakan 3 frame yang terkumpul untuk pose step ini
-      const dim = ext.descriptor.length;
-      const avgDesc = new Array<number>(dim).fill(0);
-      for (const f of frames) {
-        for (let i = 0; i < dim; i++) {
-          avgDesc[i] += f.descriptor[i];
+      capturingRef.current = true;
+      try {
+        const ext = await extractFaceDescriptor(video, lastBoxRef.current);
+        if (!ext.descriptor) {
+          setStatusMessage(ext.reason ?? 'Posisikan wajah lebih jelas & stabil.');
+          return;
         }
+
+        const frames = [
+          ...currentStepFramesRef.current,
+          { descriptor: ext.descriptor, metrics: ext.metrics },
+        ];
+        currentStepFramesRef.current = frames;
+        setSubFrameCount(frames.length);
+
+        // Jika belum mencapai ENROLL_FRAMES_PER_SAMPLE (2 frame) dan bukan klik manual
+        if (!force && frames.length < FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE) {
+          setStatusMessage(`Tahan posisi... (${frames.length}/${FACE_CONFIG.ENROLL_FRAMES_PER_SAMPLE})`);
+          lastCaptureAtRef.current = Date.now();
+          return;
+        }
+
+        // Rata-ratakan frame yang terkumpul untuk step ini
+        const dim = ext.descriptor.length;
+        const avgDesc = new Array<number>(dim).fill(0);
+        for (const f of frames) {
+          for (let i = 0; i < dim; i++) {
+            avgDesc[i] += f.descriptor[i];
+          }
+        }
+        for (let i = 0; i < dim; i++) {
+          avgDesc[i] /= frames.length;
+        }
+
+        // Rata-ratakan metrik kualitas
+        const avgQuality = {
+          brightness: Math.round(
+            frames.reduce((acc, f) => acc + (f.metrics?.brightness ?? 120), 0) / frames.length
+          ),
+          lrRatio: Number(
+            (frames.reduce((acc, f) => acc + (f.metrics?.lrRatio ?? 1), 0) / frames.length).toFixed(2)
+          ),
+          sharpness: Math.round(
+            frames.reduce((acc, f) => acc + (f.metrics?.sharpness ?? 80), 0) / frames.length
+          ),
+          clippedPct: Number(
+            (frames.reduce((acc, f) => acc + (f.metrics?.clippedPct ?? 0), 0) / frames.length).toFixed(1)
+          ),
+        };
+
+        const currentStep = ENROLLMENT_STEPS[stepIndexRef.current];
+        const newSample: EnrolledSample = {
+          descriptor: avgDesc,
+          sample_label: currentStep?.key ?? `sample_${stepIndexRef.current + 1}`,
+          quality: avgQuality,
+        };
+
+        const nextSamples = [...samplesRef.current, newSample];
+        samplesRef.current = nextSamples;
+        currentStepFramesRef.current = [];
+        setSubFrameCount(0);
+        lastCaptureAtRef.current = Date.now();
+
+        if (nextSamples.length >= ENROLLMENT_STEPS.length) {
+          setStepIndex(ENROLLMENT_STEPS.length);
+          await submitSamples(nextSamples);
+        } else {
+          const nextIdx = nextSamples.length;
+          stepIndexRef.current = nextIdx;
+          setStepIndex(nextIdx);
+          setStatusMessage(ENROLLMENT_STEPS[nextIdx].instruction);
+        }
+      } finally {
+        capturingRef.current = false;
       }
-      for (let i = 0; i < dim; i++) {
-        avgDesc[i] /= frames.length;
-      }
-
-      // Rata-ratakan metrik kualitas
-      const avgQuality = {
-        brightness: Math.round(
-          frames.reduce((acc, f) => acc + (f.metrics?.brightness ?? 120), 0) / frames.length
-        ),
-        lrRatio: Number(
-          (frames.reduce((acc, f) => acc + (f.metrics?.lrRatio ?? 1), 0) / frames.length).toFixed(2)
-        ),
-        sharpness: Math.round(
-          frames.reduce((acc, f) => acc + (f.metrics?.sharpness ?? 80), 0) / frames.length
-        ),
-        clippedPct: Number(
-          (frames.reduce((acc, f) => acc + (f.metrics?.clippedPct ?? 0), 0) / frames.length).toFixed(1)
-        ),
-      };
-
-      const currentStep = ENROLLMENT_STEPS[stepIndexRef.current];
-      const newSample: EnrolledSample = {
-        descriptor: avgDesc,
-        sample_label: currentStep.key,
-        quality: avgQuality,
-      };
-
-      const nextSamples = [...samplesRef.current, newSample];
-      samplesRef.current = nextSamples;
-      currentStepFramesRef.current = [];
-      setSubFrameCount(0);
-      lastCaptureAtRef.current = Date.now();
-
-      if (nextSamples.length >= ENROLLMENT_STEPS.length) {
-        setStepIndex(ENROLLMENT_STEPS.length);
-        await submitSamples(nextSamples);
-      } else {
-        const nextIdx = nextSamples.length;
-        stepIndexRef.current = nextIdx;
-        setStepIndex(nextIdx);
-        setStatusMessage(ENROLLMENT_STEPS[nextIdx].instruction);
-      }
-    } finally {
-      capturingRef.current = false;
-    }
-  }, [saving, submitSamples]);
+    },
+    [saving, submitSamples]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -350,7 +344,7 @@ export function FaceEnrollView({
 
     const runStep = async () => {
       if (!active) return;
-      if (document.hidden || capturingRef.current || Date.now() - lastCaptureAtRef.current < 160) {
+      if (document.hidden || capturingRef.current || Date.now() - lastCaptureAtRef.current < 250) {
         scheduleNext(120);
         return;
       }
@@ -374,7 +368,10 @@ export function FaceEnrollView({
 
         const landmarker = await getFaceLandmarker();
         const mpRes = landmarker.detectForVideo(sampleCanvas, performance.now());
-        const analysis = analyzeMediaPipeResult(mpRes, video, pitchFrontalRef.current);
+        const analysis = analyzeMediaPipeResult(mpRes, video, pitchFrontalRef.current, {
+          maxYaw: 0.20,
+          maxPitchDelta: 0.20,
+        });
         lastBoxRef.current = analysis.box;
 
         if (!analysis.statusOk) {
@@ -384,7 +381,7 @@ export function FaceEnrollView({
         }
 
         // Kalibrasi pitch frontal otomatis saat step lurus (step 0)
-        if (idx === 0 && !pitchCalibratedRef.current && Math.abs(analysis.yaw) < 0.08) {
+        if (idx === 0 && !pitchCalibratedRef.current && Math.abs(analysis.yaw) < 0.10) {
           pitchFrontalRef.current = analysis.pitch;
           pitchCalibratedRef.current = true;
         }
@@ -398,8 +395,8 @@ export function FaceEnrollView({
           return;
         }
 
-        await captureCurrentStep();
-        scheduleNext(200);
+        await captureCurrentStep(false);
+        scheduleNext(250);
       } catch {
         scheduleNext(200);
       }
@@ -422,28 +419,28 @@ export function FaceEnrollView({
       <div className="rounded-xl bg-primary-50 border border-border-sky px-4 py-2.5 flex items-start gap-2.5">
         <ShieldCheck className="w-5 h-5 text-primary-700 shrink-0 mt-0.5" />
         <div className="text-xs text-ink-muted leading-relaxed">
-          Pendaftaran wajah v2 untuk <strong className="text-ink">{subjectName}</strong> (5 pose).
-          Lepas topi, kacamata hitam, dan masker. Pastikan pencahayaan merata. Foto wajah <strong>tidak disimpan</strong>.
+          Pendaftaran wajah untuk <strong className="text-ink">{subjectName}</strong> (3 sampel cepat, cukup hadap kamera).
+          Lepas topi, kacamata hitam, dan masker. Pastikan pencahayaan cukup &amp; merata. Foto wajah <strong>tidak disimpan</strong>.
         </div>
       </div>
 
-      {/* Indikator 5 Pose */}
-      <div className="grid grid-cols-5 gap-1.5 max-w-lg mx-auto">
+      {/* Indikator 3 Sampel */}
+      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
         {ENROLLMENT_STEPS.map((step, idx) => {
           const done = idx < stepIndex;
           const active = idx === stepIndex;
           return (
             <div
               key={step.key}
-              className={`rounded-xl border px-1.5 py-1.5 text-center transition ${
+              className={`rounded-xl border px-2 py-2 text-center transition ${
                 done
                   ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
                   : active
-                    ? 'bg-primary-100 border-primary-500 text-primary-700 font-bold'
+                    ? 'bg-primary-100 border-primary-500 text-primary-700 font-bold shadow-sm'
                     : 'bg-page border-border-sky text-ink-muted'
               }`}
             >
-              <div className="text-[11px] font-bold truncate">
+              <div className="text-xs font-bold truncate">
                 {done ? '✓' : `${idx + 1}`} {step.label}
               </div>
             </div>
@@ -519,7 +516,7 @@ export function FaceEnrollView({
               {!modelsReady && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
               <span>
                 {modelsReady
-                  ? `Pose ${Math.min(stepIndex + 1, 5)}/5: ${statusMessage}`
+                  ? `Sampel ${Math.min(stepIndex + 1, ENROLLMENT_STEPS.length)}/${ENROLLMENT_STEPS.length}: ${statusMessage}`
                   : statusMessage}
               </span>
             </div>
@@ -544,11 +541,11 @@ export function FaceEnrollView({
         {cameraReady && modelsReady && !saving && !cameraError && stepIndex < ENROLLMENT_STEPS.length && (
           <button
             type="button"
-            onClick={captureCurrentStep}
+            onClick={() => captureCurrentStep(true)}
             className="inline-flex items-center gap-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-4 py-2.5 text-sm font-semibold transition"
           >
             <CheckCircle2 className="w-4 h-4" />
-            <span>Ambil Manual ({stepIndex + 1}/5)</span>
+            <span>Ambil Manual ({stepIndex + 1}/{ENROLLMENT_STEPS.length})</span>
           </button>
         )}
       </div>

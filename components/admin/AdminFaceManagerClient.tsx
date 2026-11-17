@@ -328,7 +328,7 @@ export function AdminFaceManagerClient() {
           <div className="rounded-xl bg-danger/10 border border-danger/30 p-3.5 text-xs text-danger leading-relaxed">
             <p className="font-bold mb-1">Tindakan ini tidak dapat dibatalkan!</p>
             Seluruh data template biometrik wajah semua karyawan dan pengawal akan dihapus secara permanen.
-            Setelah ini, semua orang harus melakukan pendaftaran ulang menggunakan pipeline v2 (5 pose).
+            Setelah ini, semua orang harus melakukan pendaftaran ulang menggunakan pipeline v2 (3 sampel frontal).
           </div>
 
           <div>

@@ -112,7 +112,8 @@ function landmarkDist(
 export function analyzeMediaPipeResult(
   result: FaceLandmarkerResult,
   video: HTMLVideoElement,
-  pitchFrontal = 0
+  pitchFrontal = 0,
+  options?: { skipPoseGating?: boolean; maxYaw?: number; maxPitchDelta?: number }
 ): FaceQualityAnalysis {
   const faceCount = result.faceLandmarks?.length ?? 0;
 
@@ -265,31 +266,35 @@ export function analyzeMediaPipeResult(
   }
 
   // Gate 3: Sudut Hadap Wajah (Pose Gating)
-  if (Math.abs(yaw) > FACE_CONFIG.MAX_ABS_YAW) {
-    return {
-      faceCount: 1,
-      statusOk: false,
-      message: 'Hadap lurus ke kamera',
-      yaw,
-      pitch,
-      rollDeg,
-      isBlinking,
-      box,
-    };
-  }
+  if (!options?.skipPoseGating) {
+    const allowedYaw = options?.maxYaw ?? FACE_CONFIG.MAX_ABS_YAW;
+    if (Math.abs(yaw) > allowedYaw) {
+      return {
+        faceCount: 1,
+        statusOk: false,
+        message: 'Hadap lurus ke kamera',
+        yaw,
+        pitch,
+        rollDeg,
+        isBlinking,
+        box,
+      };
+    }
 
-  const pitchDelta = pitch - pitchFrontal;
-  if (Math.abs(pitchDelta) > FACE_CONFIG.MAX_ABS_PITCH_DELTA) {
-    return {
-      faceCount: 1,
-      statusOk: false,
-      message: pitchDelta > 0 ? 'Tundukkan kepala sedikit' : 'Tegakkan kepala sedikit',
-      yaw,
-      pitch,
-      rollDeg,
-      isBlinking,
-      box,
-    };
+    const pitchDelta = pitch - pitchFrontal;
+    const allowedPitch = options?.maxPitchDelta ?? FACE_CONFIG.MAX_ABS_PITCH_DELTA;
+    if (Math.abs(pitchDelta) > allowedPitch) {
+      return {
+        faceCount: 1,
+        statusOk: false,
+        message: pitchDelta > 0 ? 'Tundukkan kepala sedikit' : 'Tegakkan kepala sedikit',
+        yaw,
+        pitch,
+        rollDeg,
+        isBlinking,
+        box,
+      };
+    }
   }
 
   if (Math.abs(rollDeg) > FACE_CONFIG.MAX_ABS_ROLL_DEG) {

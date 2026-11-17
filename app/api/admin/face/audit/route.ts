@@ -217,7 +217,7 @@ export async function GET(req: NextRequest) {
       status = 'Perlu daftar ulang';
       statusReason =
         p.sampleCount < 3
-          ? `Sampel wajah terlalu sedikit (${p.sampleCount} sampel). Disarankan 5 pose.`
+          ? `Sampel wajah terlalu sedikit (${p.sampleCount} sampel). Disarankan minimal 3 sampel.`
           : `Sebaran internal tinggi (${p.internalSpread} > ${config.ENROLL_MAX_OUTLIER_DIST}). Wajah antar sampel tidak konsisten.`;
     } else if (nn && nn.distance < config.ENROLL_LOOKALIKE_GUARD) {
       const isFlagged = isLookalikePair(p.id, nn.id, flaggedPairs);
