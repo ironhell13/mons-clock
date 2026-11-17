@@ -134,3 +134,4 @@ create policy "Admin manage lookalike flags" on public.face_lookalike_flags
       where profiles.id = auth.uid() and profiles.role in ('admin','superadmin')
     )
   );
+

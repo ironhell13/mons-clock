@@ -10,7 +10,7 @@ import {
 } from '@/lib/face-decision';
 
 export async function GET(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -290,3 +290,4 @@ export async function GET(req: NextRequest) {
     active_config: config,
   });
 }
+

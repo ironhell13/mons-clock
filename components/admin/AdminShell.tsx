@@ -88,8 +88,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Biometrik Wajah',
     items: [
       { href: '/admin/wajah', label: 'Kelola Wajah', icon: ScanFace },
-      { href: '/admin/wajah/audit', label: 'Audit Kemiripan', icon: ShieldCheck },
-      { href: '/admin/wajah/review', label: 'Review Absensi', icon: ShieldAlert },
+      { href: '/admin/wajah/audit', label: 'Audit Kemiripan', icon: ShieldCheck, superadminOnly: true },
+      { href: '/admin/wajah/review', label: 'Review Absensi', icon: ShieldAlert, superadminOnly: true },
     ],
   },
   {

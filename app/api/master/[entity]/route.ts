@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { requireApiRole } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { isValidMasterEntity, MASTER_CONFIG } from '@/lib/master-config';
 import {
   areaSchema,
@@ -352,12 +353,81 @@ export async function DELETE(
     return NextResponse.json({ error: 'Entitas master tidak valid.' }, { status: 400 });
   }
 
+  const meta = MASTER_CONFIG[entity];
+  const isDeleteAll = req.nextUrl.searchParams.get('all') === 'true';
+
+  // === FITUR: HAPUS SEMUA DATA MASTER ===
+  if (isDeleteAll) {
+    let body: { confirm_phrase?: string } = {};
+    try {
+      body = (await req.json()) as { confirm_phrase?: string };
+    } catch {
+      // Body kosong
+    }
+
+    if (body.confirm_phrase !== 'HAPUS') {
+      return NextResponse.json(
+        { error: 'Ketik "HAPUS" dengan huruf besar untuk konfirmasi hapus semua data.' },
+        { status: 400 }
+      );
+    }
+
+    const adminClient = createAdminClient();
+
+    // Hitung data sebelum dihapus
+    const { count: countBefore } = await adminClient
+      .from(meta.table)
+      .select('*', { count: 'exact', head: true });
+
+    // Bersihkan relasi transaksi & biometrik agar database tidak tertahan foreign key restrict
+    if (entity === 'karyawan') {
+      await adminClient.from('trips').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await adminClient.from('face_verifications').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await adminClient.from('face_lookalike_flags').delete().eq('subject_type', 'employee');
+      await adminClient.from('face_templates').delete().eq('subject_type', 'employee');
+      await adminClient.from('attendance_events').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await adminClient.from('attendance').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    } else if (entity === 'pengawal') {
+      await adminClient.from('trips').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await adminClient.from('face_lookalike_flags').delete().eq('subject_type', 'escort');
+      await adminClient.from('face_templates').delete().eq('subject_type', 'escort');
+    } else if (entity === 'area') {
+      await adminClient.from('trips').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    }
+
+    const { error: delAllErr } = await adminClient
+      .from(meta.table)
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (delAllErr) {
+      return NextResponse.json({ error: mapDbError(delAllErr) }, { status: 400 });
+    }
+
+    await adminClient.from('audit_logs').insert({
+      user_id: auth.session.userId,
+      action: 'delete_all_master',
+      table_name: meta.table,
+      payload: {
+        entity,
+        deleted_count: countBefore ?? 0,
+        admin_email: auth.session.profile.email,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      deleted_count: countBefore ?? 0,
+      message: `Seluruh data ${meta.title} (${countBefore ?? 0} data) berhasil dihapus.`,
+    });
+  }
+
+  // === FITUR: HAPUS SATU BARIS DATA ===
   const id = req.nextUrl.searchParams.get('id');
   if (!id) {
     return NextResponse.json({ error: 'ID data wajib disertakan.' }, { status: 400 });
   }
 
-  const meta = MASTER_CONFIG[entity];
   const supabase = await createClient();
 
   if (entity === 'jabatan' || entity === 'vendor') {

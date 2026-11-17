@@ -3,7 +3,7 @@ import { requireApiRole } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
       attendance_id,
       employee_id,
       event_type,
-      event_time,
+      occurred_at,
       match_distance,
       second_subject_id,
       second_distance,
@@ -32,10 +32,7 @@ export async function GET(req: NextRequest) {
       verification_id,
       voided_at,
       void_reason,
-      created_at,
-      employee:employees!attendance_events_employee_id_fkey(id, name, employee_no),
-      second_employee:employees!attendance_events_second_subject_id_fkey(id, name, employee_no),
-      verification:face_verifications(id, confirmed_method, confirm_attempts)
+      created_at
     `
     )
     .order('created_at', { ascending: false })
@@ -54,6 +51,42 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Ambil detail karyawan dan verifikasi tanpa mengandalkan PostgREST relations
+  const empIds = new Set<string>();
+  const verifIds = new Set<string>();
+
+  for (const ev of events ?? []) {
+    if (ev.employee_id) empIds.add(ev.employee_id);
+    if (ev.second_subject_id) empIds.add(ev.second_subject_id);
+    if (ev.verification_id) verifIds.add(ev.verification_id);
+  }
+
+  const [empsRes, verifsRes] = await Promise.all([
+    empIds.size > 0
+      ? adminClient
+          .from('employees')
+          .select('id, name, employee_no')
+          .in('id', Array.from(empIds))
+      : Promise.resolve({ data: [] }),
+    verifIds.size > 0
+      ? adminClient
+          .from('face_verifications')
+          .select('id, confirmed_method, confirm_attempts')
+          .in('id', Array.from(verifIds))
+      : Promise.resolve({ data: [] }),
+  ]);
+
+  const empMap = new Map((empsRes.data ?? []).map((e) => [e.id, e]));
+  const verifMap = new Map((verifsRes.data ?? []).map((v) => [v.id, v]));
+
+  const formattedEvents = (events ?? []).map((ev) => ({
+    ...ev,
+    event_time: ev.occurred_at ?? ev.created_at,
+    employee: empMap.get(ev.employee_id) ?? null,
+    second_employee: ev.second_subject_id ? empMap.get(ev.second_subject_id) ?? null : null,
+    verification: ev.verification_id ? verifMap.get(ev.verification_id) ?? null : null,
+  }));
+
   // Ringkasan 7 hari terakhir
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const [confirmCountRes, voidedCountRes] = await Promise.all([
@@ -70,7 +103,7 @@ export async function GET(req: NextRequest) {
   ]);
 
   return NextResponse.json({
-    events: events ?? [],
+    events: formattedEvents,
     stats_7d: {
       confirm_count: confirmCountRes.count ?? 0,
       voided_count: voidedCountRes.count ?? 0,
@@ -79,7 +112,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requireApiRole(['admin', 'superadmin']);
+  const auth = await requireApiRole(['superadmin']);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -169,16 +202,18 @@ export async function POST(req: NextRequest) {
               ? 'istirahat_kembali_at'
               : 'pulang_at';
 
+      const eventTimeIso = event.occurred_at || event.created_at;
+
       if (targetAtt) {
         await adminClient
           .from('attendance')
-          .update({ [timeField]: event.event_time })
+          .update({ [timeField]: eventTimeIso })
           .eq('id', targetAtt.id);
       } else {
         await adminClient.from('attendance').insert({
           employee_id: correct_employee_id,
           work_date: workDate,
-          [timeField]: event.event_time,
+          [timeField]: eventTimeIso,
         });
       }
     }
@@ -205,3 +240,4 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ error: 'Aksi tidak dikenal.' }, { status: 400 });
 }
+

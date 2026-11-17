@@ -89,3 +89,4 @@ describe('Gate Kualitas Gambar Wajah (evaluateCropPixels)', () => {
     expect(res.metrics.clippedPct).toBeGreaterThan(8);
   });
 });
+

@@ -56,3 +56,4 @@ export async function POST(req: NextRequest) {
     message: `Berhasil me-reset ${templateCount ?? 0} template wajah. Semua karyawan/pengawal perlu mendaftar ulang dengan pipeline v2.`,
   });
 }
+

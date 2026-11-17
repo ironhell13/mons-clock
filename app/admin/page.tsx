@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
+import { getCurrentSessionProfile } from '@/lib/auth';
 import { formatWibDateFull, formatWibDateTime, getWibDateString } from '@/lib/time';
 import {
   Car,
@@ -87,6 +88,9 @@ export default async function AdminSummaryPage() {
     escort: { name: string; vendor: string } | null;
     area: { name: string } | null;
   }[];
+  const session = await getCurrentSessionProfile();
+  const isSuperadmin = session?.profile.role === 'superadmin';
+
   const guestTodayCount = guestsRes.count ?? 0;
   const inWorkshopCount = workshopRes.count ?? 0;
   const confirm7dCount = confirm7dRes.count ?? 0;
@@ -146,41 +150,43 @@ export default async function AdminSummaryPage() {
         </div>
       </div>
 
-      {/* Kartu Ringkasan Review Biometrik Wajah (7 Hari Terakhir) */}
-      <div className="rounded-2xl bg-gradient-to-r from-amber-50/80 via-surface to-primary-50/80 border border-amber-200/90 p-5 shadow-soft flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-start gap-3.5">
-          <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-soft">
-            <ShieldAlert className="w-5 h-5" />
+      {/* Kartu Ringkasan Review Biometrik Wajah (7 Hari Terakhir) - Khusus Superadmin */}
+      {isSuperadmin && (
+        <div className="rounded-2xl bg-gradient-to-r from-amber-50/80 via-surface to-primary-50/80 border border-amber-200/90 p-5 shadow-soft flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-soft">
+              <ShieldAlert className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-ink flex items-center gap-2">
+                Review Biometrik & Keamanan Wajah
+                <span className="text-[10px] font-semibold text-amber-800 bg-amber-100/90 px-2 py-0.5 rounded-full border border-amber-200">
+                  7 Hari Terakhir
+                </span>
+              </h2>
+              <p className="text-xs text-ink-muted mt-1 leading-relaxed">
+                Tercatat <strong className="text-amber-900">{confirm7dCount} verifikasi zona konfirmasi</strong> (butuh verifikasi 2nd factor) dan{' '}
+                <strong className="text-rose-700">{voided7dCount} absensi dibatalkan</strong> oleh karyawan (&ldquo;Bukan saya&rdquo;).
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-sm font-bold text-ink flex items-center gap-2">
-              Review Biometrik & Keamanan Wajah
-              <span className="text-[10px] font-semibold text-amber-800 bg-amber-100/90 px-2 py-0.5 rounded-full border border-amber-200">
-                7 Hari Terakhir
-              </span>
-            </h2>
-            <p className="text-xs text-ink-muted mt-1 leading-relaxed">
-              Tercatat <strong className="text-amber-900">{confirm7dCount} verifikasi zona konfirmasi</strong> (butuh verifikasi 2nd factor) dan{' '}
-              <strong className="text-rose-700">{voided7dCount} absensi dibatalkan</strong> oleh karyawan (&ldquo;Bukan saya&rdquo;).
-            </p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-2.5">
-          <Link
-            href="/admin/wajah/review"
-            className="rounded-xl bg-surface hover:bg-page border border-border-sky px-3.5 py-2 text-xs font-bold text-ink shadow-soft transition"
-          >
-            Review Absen
-          </Link>
-          <Link
-            href="/admin/wajah/audit"
-            className="rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-3.5 py-2 text-xs font-bold shadow-soft transition"
-          >
-            Audit Kemiripan
-          </Link>
+          <div className="flex items-center gap-2.5">
+            <Link
+              href="/admin/wajah/review"
+              className="rounded-xl bg-surface hover:bg-page border border-border-sky px-3.5 py-2 text-xs font-bold text-ink shadow-soft transition"
+            >
+              Review Absen
+            </Link>
+            <Link
+              href="/admin/wajah/audit"
+              className="rounded-xl bg-primary-600 hover:bg-primary-700 text-white px-3.5 py-2 text-xs font-bold shadow-soft transition"
+            >
+              Audit Kemiripan
+            </Link>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {statCards.map((card) => {

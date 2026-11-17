@@ -68,6 +68,9 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
   const [deleteTarget, setDeleteTarget] = useState<MasterRecord | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
+  const [deleteAllPhrase, setDeleteAllPhrase] = useState('');
+  const [deletingAll, setDeletingAll] = useState(false);
 
   // Form state
   const [rfidNo, setRfidNo] = useState('');
@@ -334,6 +337,35 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
     }
   };
 
+  const handleDeleteAll = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (deleteAllPhrase.trim() !== 'HAPUS') {
+      toast.error('Ketik "HAPUS" dengan huruf besar untuk konfirmasi.');
+      return;
+    }
+    setDeletingAll(true);
+    try {
+      const res = await fetch(`/api/master/${entity}?all=true`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm_phrase: 'HAPUS' }),
+      });
+      const json = (await res.json()) as { message?: string; error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? 'Gagal menghapus semua data.');
+        return;
+      }
+      toast.success(json.message ?? `Semua data ${meta.title} berhasil dihapus.`);
+      setDeleteAllOpen(false);
+      setDeleteAllPhrase('');
+      await loadItems();
+    } catch {
+      toast.error('Gagal terhubung ke server.');
+    } finally {
+      setDeletingAll(false);
+    }
+  };
+
   const handleExport = () => {
     const rows = filteredAndSorted.map((item) => {
       if (entity === 'karyawan') {
@@ -429,6 +461,19 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
           >
             <Download className="w-4 h-4 text-primary-600" />
             <span>Export Excel</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setDeleteAllPhrase('');
+              setDeleteAllOpen(true);
+            }}
+            disabled={items.length === 0}
+            className="inline-flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/10 hover:bg-danger/20 disabled:opacity-40 text-danger px-3.5 py-2.5 text-sm font-semibold transition"
+            title={`Hapus semua data ${meta.title}`}
+          >
+            <Trash2 className="w-4 h-4" />
+            <span>Hapus Semua</span>
           </button>
           <button
             type="button"
@@ -828,6 +873,62 @@ export function MasterPageClient({ entity }: { entity: MasterEntityKey }) {
         }" akan dihapus permanen. Jika sudah pernah dipakai pada transaksi, gunakan fitur Nonaktifkan.`}
         confirmLabel="Hapus Permanen"
       />
+
+      {/* Modal Konfirmasi Hapus Semua Data Master */}
+      <Modal
+        open={deleteAllOpen}
+        onClose={() => {
+          if (!deletingAll) setDeleteAllOpen(false);
+        }}
+        title={`Hapus Semua Data ${meta.title}`}
+        maxWidthClass="max-w-md"
+      >
+        <form onSubmit={handleDeleteAll} className="space-y-4">
+          <div className="rounded-xl bg-danger/10 border border-danger/30 p-3.5 text-xs text-danger leading-relaxed">
+            <p className="font-bold mb-1">Perhatian! Tindakan ini tidak dapat dibatalkan.</p>
+            Seluruh data <strong>{meta.singular.toLowerCase()}</strong> ({items.length} data) akan dihapus secara permanen dari sistem untuk memungkinkan pendataan ulang dari awal.
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-ink mb-1.5">
+              Ketik <span className="text-danger font-mono font-black">HAPUS</span> untuk mengonfirmasi:
+            </label>
+            <input
+              type="text"
+              value={deleteAllPhrase}
+              onChange={(e) => setDeleteAllPhrase(e.target.value)}
+              placeholder="HAPUS"
+              disabled={deletingAll}
+              className="w-full rounded-xl border border-border-sky bg-page px-3.5 py-2.5 text-sm font-mono tracking-widest text-center focus:border-danger focus:bg-white focus:outline-none"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              disabled={deletingAll}
+              onClick={() => setDeleteAllOpen(false)}
+              className="rounded-xl border border-border-sky bg-white px-4 py-2.5 text-xs font-bold text-ink hover:bg-page"
+            >
+              Batal
+            </button>
+            <button
+              type="submit"
+              disabled={deletingAll || deleteAllPhrase.trim() !== 'HAPUS'}
+              className="inline-flex items-center gap-2 rounded-xl bg-danger hover:bg-red-700 disabled:opacity-50 text-white px-4 py-2.5 text-xs font-bold transition"
+            >
+              {deletingAll ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Menghapus...</span>
+                </>
+              ) : (
+                <span>Ya, Hapus Semua ({items.length})</span>
+              )}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
