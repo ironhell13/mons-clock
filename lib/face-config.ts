@@ -52,17 +52,17 @@ export const FACE_CONFIG: FaceConfig = {
   FRAME_SPACING_MS: 150, // Jeda waktu minimum antar pengambilan frame
   MAX_FRAME_SPREAD: 0.30, // Jarak antar-frame maksimum (konsistensi multi-frame)
 
-  // === Kebijakan Keputusan di Server (Keamanan Biometrik Ketat) ===
-  ACCEPT_MAX_SCORE: 0.32, // Skor d_top2 ketat untuk status ACCEPT (mencegah salah absen antar wajah mirip)
-  ACCEPT_MIN_MARGIN: 0.08, // Margin minimum (S2 - S1) untuk status ACCEPT
-  CONFIRM_MAX_SCORE: 0.40, // Skor d_top2 maksimum untuk status CONFIRM (di atas 0.40 langsung ditolak)
-  CANDIDATE_WINDOW: 0.08, // Kandidat dengan skor <= S1 + window ditawarkan di zona confirm
+  // === Kebijakan Keputusan di Server (Keamanan Biometrik Ketat 1:N) ===
+  ACCEPT_MAX_SCORE: 0.35, // Skor d_top2 untuk status ACCEPT langsung
+  ACCEPT_MIN_MARGIN: 0.06, // Margin minimum (S2 - S1) untuk status ACCEPT
+  CONFIRM_MAX_SCORE: 0.42, // Skor d_top2 maksimum untuk status CONFIRM (di atas 0.42 langsung ditolak sebagai tidak dikenal)
+  CANDIDATE_WINDOW: 0.06, // Kandidat dengan skor <= S1 + window ditawarkan di zona confirm
 
   // === Pendaftaran Wajah (Enrollment) ===
   ENROLL_SAMPLES: 3, // 3 sampel berkualitas tinggi (Cepat & akurat dengan cahaya alami ruangan)
   ENROLL_FRAMES_PER_SAMPLE: 1, // 1 frame per sampel berkualitas tinggi
   ENROLL_MAX_OUTLIER_DIST: 0.35, // Jarak maksimum sampel ke centroid dirinya sendiri
-  ENROLL_LOOKALIKE_GUARD: 0.48, // Skor ke orang lain di bawah nilai ini akan ditolak/diberi flag mirip
+  ENROLL_LOOKALIKE_GUARD: 0.40, // Skor ke orang lain di bawah nilai ini akan ditolak/diberi flag mirip (0.40 mencegah blokir skor 0.475)
   MAX_SAMPLES_PER_SUBJECT: 12, // Batas maksimum sampel per orang
 
   // === Verifikasi & Single-Use Token ===
