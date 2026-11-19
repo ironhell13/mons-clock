@@ -255,12 +255,44 @@ export async function PATCH(req: NextRequest) {
         );
       }
       const effectiveDate = masukIso ? getWibDateString(masukIso) : workDate;
-      const onConflict = isEscort ? 'escort_id,work_date' : 'employee_id,work_date';
+      const lookupCol = isEscort ? 'escort_id' : 'employee_id';
+      const lookupVal = isEscort ? escortId : employeeId;
 
-      const { data: inserted, error: insErr } = await supabase
+      const { data: existingRow } = await supabase
         .from('attendance')
-        .upsert(
-          {
+        .select('id')
+        .eq(lookupCol, lookupVal)
+        .eq('work_date', effectiveDate)
+        .maybeSingle();
+
+      let targetRow: Record<string, unknown> | null = null;
+
+      if (existingRow?.id) {
+        const { data: updated, error: updErr } = await supabase
+          .from('attendance')
+          .update({
+            subject_type: subjectType,
+            masuk_at: masukIso,
+            istirahat_at: istirahatIso,
+            istirahat_kembali_at: istirahatKembaliIso,
+            pulang_at: pulangIso,
+            ...correctionFields,
+          })
+          .eq('id', existingRow.id)
+          .select('*')
+          .single();
+
+        if (updErr || !updated) {
+          return NextResponse.json(
+            { error: updErr?.message ?? 'Gagal memperbarui data absensi.' },
+            { status: 400 }
+          );
+        }
+        targetRow = updated;
+      } else {
+        const { data: inserted, error: insErr } = await supabase
+          .from('attendance')
+          .insert({
             subject_type: subjectType,
             employee_id: employeeId,
             escort_id: escortId,
@@ -271,26 +303,33 @@ export async function PATCH(req: NextRequest) {
             pulang_at: pulangIso,
             previous_data: { is_new: true },
             ...correctionFields,
-          },
-          { onConflict }
-        )
-        .select('*')
-        .single();
+          })
+          .select('*')
+          .single();
 
-      if (insErr) {
-        return NextResponse.json({ error: insErr.message }, { status: 400 });
+        if (insErr || !inserted) {
+          return NextResponse.json(
+            { error: insErr?.message ?? 'Gagal membuat data absensi baru.' },
+            { status: 400 }
+          );
+        }
+        targetRow = inserted;
+      }
+
+      if (!targetRow) {
+        return NextResponse.json({ error: 'Gagal memproses data absensi.' }, { status: 500 });
       }
 
       await supabase.from('audit_logs').insert({
         user_id: auth.session.userId,
         action: isSupervisor ? 'supervisor_correction' : 'admin_correction',
         table_name: 'attendance',
-        record_id: inserted.id,
+        record_id: targetRow.id as string,
         reason,
-        payload: { before: null, after: inserted },
+        payload: { before: null, after: targetRow },
       });
 
-      return NextResponse.json({ item: inserted });
+      return NextResponse.json({ item: targetRow });
     }
 
     const { data: beforeRow, error: findErr } = await supabase

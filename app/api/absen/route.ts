@@ -97,25 +97,59 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const onConflict = isEscort ? 'escort_id,work_date' : 'employee_id,work_date';
+    let attendanceId: string;
 
-    const { data: upserted, error: upsertErr } = await adminClient
-      .from('attendance')
-      .upsert(
-        {
-          employee_id,
-          escort_id,
-          subject_type,
-          work_date: todayWib,
+    if (existingToday) {
+      const { data: updated, error: updErr } = await adminClient
+        .from('attendance')
+        .update({
           masuk_at: nowIso,
-        },
-        { onConflict }
-      )
-      .select('id')
-      .single();
+          subject_type,
+        })
+        .eq('id', existingToday.id)
+        .select('id')
+        .single();
 
-    if (upsertErr) {
-      return NextResponse.json({ error: upsertErr.message }, { status: 500 });
+      if (updErr || !updated) {
+        return NextResponse.json(
+          { error: updErr?.message ?? 'Gagal memperbarui absensi masuk.' },
+          { status: 500 }
+        );
+      }
+      attendanceId = updated.id;
+    } else {
+      const newAttendancePayload: Record<string, unknown> = {
+        employee_id,
+        escort_id,
+        subject_type,
+        work_date: todayWib,
+        masuk_at: nowIso,
+      };
+
+      const { data: inserted, error: insErr } = await adminClient
+        .from('attendance')
+        .insert(newAttendancePayload)
+        .select('id')
+        .single();
+
+      if (insErr) {
+        if (insErr.code === '23505') {
+          return NextResponse.json(
+            {
+              duplicate: true,
+              error: 'Sudah absen masuk hari ini.',
+              employeeName: subject.name,
+            },
+            { status: 409 }
+          );
+        }
+        return NextResponse.json({ error: insErr.message }, { status: 500 });
+      }
+
+      if (!inserted) {
+        return NextResponse.json({ error: 'Gagal membuat data absensi masuk.' }, { status: 500 });
+      }
+      attendanceId = inserted.id;
     }
 
     const { data: insertedEvent } = await adminClient
@@ -124,7 +158,7 @@ export async function POST(req: NextRequest) {
         employee_id,
         escort_id,
         subject_type,
-        attendance_id: upserted.id,
+        attendance_id: attendanceId,
         event_type: 'masuk',
         occurred_at: nowIso,
         match_distance: verification.score,
